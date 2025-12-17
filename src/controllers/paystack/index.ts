@@ -1,0 +1,2007 @@
+import express from "express";
+import { Request, Response } from "express";
+import { prismadb } from "../../index";
+import { Paystack } from "paystack-sdk";
+import { Prisma, PaymentStatusType } from "@prisma/client";
+import {
+  sendPurchaseConfirmationMail,
+  sendPaymentReminder,
+  sendPaymentConfirmation,
+  sendSecondHalfReminder,
+  sendAccountDeactivationNotification,
+  sendWrongfulDeactivationAlert,
+} from "./mail";
+import cron from "node-cron";
+import {
+  startOfMonth,
+  endOfMonth,
+  addMonths,
+  isWithinInterval,
+} from "date-fns";
+
+const paystack = new Paystack(process.env.PAYSTACK_SECRET_KEY as string);
+const paymentApp = express.Router();
+paymentApp.use(express.json());
+
+// Define payment plans as constants
+const PAYMENT_PLANS = {
+  FULL_PAYMENT: "FULL_PAYMENT",
+  FIRST_HALF_COMPLETE: "FIRST_HALF_COMPLETE",
+  SECOND_HALF_PAYMENT: "SECOND_HALF_PAYMENT",
+  FOUR_INSTALLMENTS: "FOUR_INSTALLMENTS",
+  THREE_INSTALLMENTS: "THREE_INSTALLMENTS",
+} as const;
+
+type PaymentPlan = (typeof PAYMENT_PLANS)[keyof typeof PAYMENT_PLANS] | null;
+
+// Constants from environment
+const TOTAL_COURSE_FEE = Number(process.env.TOTAL_COURSE_FEE) || 250000;
+const INSTALLMENT_CONFIG = {
+  seatReservation: 30000,
+  cohortAccess: 55000,
+  month1: 85000,
+  month2: 80000,
+};
+const THREE_INSTALLMENT_CONFIG = {
+  initialPayment: 85000,
+  month1: 85000,
+  month2: 80000,
+};
+
+//#region Utility Functions
+const getCohortSchedule = (startDate: Date) => ({
+  seatReservationDue: new Date(startDate),
+  cohortAccessDue: addMonths(startDate, 0),
+  month1Due: addMonths(startDate, 1),
+  month2Due: addMonths(startDate, 2),
+});
+
+const getThreeInstallmentSchedule = (startDate: Date) => ({
+  initialPaymentDue: new Date(startDate),
+  month1Due: addMonths(startDate, 1),
+  month2Due: addMonths(startDate, 2),
+});
+
+async function getCourseDetails(courseId: string) {
+  return prismadb.course.findUniqueOrThrow({
+    where: { id: courseId },
+    select: {
+      id: true,
+      title: true,
+      cohorts: {
+        orderBy: { startDate: "asc" },
+        select: {
+          id: true,
+          startDate: true,
+          endDate: true,
+          name: true,
+        },
+      },
+    },
+  });
+}
+
+async function getUserDetails(userId: string) {
+  return prismadb.user.findUniqueOrThrow({
+    where: { id: userId },
+    select: {
+      id: true,
+      email: true,
+      name: true,
+      phone_number: true,
+    },
+  });
+}
+
+function validatePaymentPlan(input: string | null | undefined): PaymentPlan {
+  if (!input) return null;
+  return Object.values(PAYMENT_PLANS).includes(input as any)
+    ? (input as PaymentPlan)
+    : null;
+}
+
+// Helper to get payment plan from either new or old field
+async function getPaymentPlanFromRecord(record: any): Promise<PaymentPlan> {
+  return record.paymentPlan || record.paymentType || null;
+}
+
+function getPaymentPlan(record: any): PaymentPlan {
+  return record.paymentPlan || record.paymentType || null;
+}
+
+async function assignToSelectedCohort(
+  tx: Prisma.TransactionClient,
+  userId: string,
+  courseId: string,
+  cohortName: string,
+  paymentPlan?: PaymentPlan
+) {
+  const course = await tx.course.findUniqueOrThrow({
+    where: { id: courseId },
+    include: {
+      cohorts: {
+        where: {
+          name: cohortName,
+        },
+      },
+    },
+  });
+
+  if (!course.cohorts.length) {
+    throw new Error(`Cohort "${cohortName}" not found for this course`);
+  }
+
+  const targetCohort = course.cohorts[0];
+
+  let isPaymentActive = false;
+
+  if (paymentPlan === PAYMENT_PLANS.FULL_PAYMENT) {
+    isPaymentActive = true;
+  } else if (paymentPlan === PAYMENT_PLANS.FIRST_HALF_COMPLETE) {
+    isPaymentActive = true;
+  } else if (paymentPlan === PAYMENT_PLANS.FOUR_INSTALLMENTS) {
+    isPaymentActive = false;
+  }
+
+  const userCohort = await tx.userCohort.upsert({
+    where: {
+      userId_cohortId_courseId: {
+        userId,
+        cohortId: targetCohort.id,
+        courseId,
+      },
+    },
+    create: {
+      userId,
+      cohortId: targetCohort.id,
+      courseId,
+      isPaymentActive,
+    },
+    update: {
+      cohortId: targetCohort.id,
+      isPaymentActive,
+    },
+    include: {
+      cohort: {
+        select: {
+          id: true,
+          name: true,
+          startDate: true,
+          endDate: true,
+        },
+      },
+    },
+  });
+
+  return {
+    ...userCohort,
+    cohortId: targetCohort.id,
+    actualStartDate: targetCohort.startDate,
+  };
+}
+
+async function sendPaymentNotifications(
+  userId: string,
+  courseId: string,
+  installmentNumber?: number
+) {
+  const [user, course, paymentStatus] = await Promise.all([
+    getUserDetails(userId),
+    getCourseDetails(courseId),
+    prismadb.paymentStatus.findUnique({
+      where: { userId_courseId: { userId, courseId } },
+      include: {
+        paymentInstallments: { orderBy: { installmentNumber: "asc" } },
+        cohort: true,
+      },
+    }),
+  ]);
+
+  if (!paymentStatus) return;
+
+  const paymentPlan = await getPaymentPlanFromRecord(paymentStatus);
+
+  if (paymentPlan === PAYMENT_PLANS.FULL_PAYMENT) {
+    await sendPurchaseConfirmationMail(
+      user.email!,
+      course.title,
+      user.name || "Student",
+      `${process.env.NEXT_PUBLIC_APP_URL}/dashboard`
+    );
+  } else if (paymentPlan === PAYMENT_PLANS.FIRST_HALF_COMPLETE) {
+    if (paymentStatus.status === PaymentStatusType.COMPLETE) {
+      await sendPurchaseConfirmationMail(
+        user.email!,
+        course.title,
+        user.name || "Student",
+        `${process.env.NEXT_PUBLIC_APP_URL}/dashboard`
+      );
+    } else {
+      await sendPaymentConfirmation(
+        user.email!,
+        user.name || "Student",
+        course.title,
+        1
+      );
+    }
+  } else if (
+    paymentPlan === PAYMENT_PLANS.FOUR_INSTALLMENTS &&
+    installmentNumber
+  ) {
+    if (installmentNumber === 4) {
+      await sendPurchaseConfirmationMail(
+        user.email!,
+        course.title,
+        user.name || "Student",
+        `${process.env.NEXT_PUBLIC_APP_URL}/dashboard`
+      );
+    } else {
+      await sendPaymentConfirmation(
+        user.email!,
+        user.name || "Student",
+        course.title,
+        installmentNumber
+      );
+    }
+  }
+}
+
+// Add better error logging
+const logPaymentError = (message: string, data: any = {}) => {
+  console.error(`[PAYMENT_ERROR] ${message}`, JSON.stringify(data, null, 2));
+};
+//#endregion
+
+//#region Payment Status Check
+paymentApp.get("/payment-status", async (req: Request, res: Response) => {
+  const { userId, courseId } = req.query;
+
+  if (!userId || !courseId) {
+    return res
+      .status(400)
+      .json({ error: "Missing required parameters: userId and courseId" });
+  }
+
+  try {
+    const paymentStatus = await prismadb.paymentStatus.findUnique({
+      where: {
+        userId_courseId: {
+          userId: userId as string,
+          courseId: courseId as string,
+        },
+      },
+      include: {
+        paymentInstallments: {
+          orderBy: {
+            installmentNumber: "asc",
+          },
+        },
+      },
+    });
+
+    if (!paymentStatus) {
+      return res.json(null);
+    }
+
+    let remainingAmount = 0;
+    const paymentPlan = await getPaymentPlanFromRecord(paymentStatus);
+
+    if (
+      paymentPlan === PAYMENT_PLANS.FIRST_HALF_COMPLETE &&
+      paymentStatus.status === PaymentStatusType.BALANCE_HALF_PAYMENT
+    ) {
+      remainingAmount = TOTAL_COURSE_FEE / 2;
+    } else if (paymentPlan === PAYMENT_PLANS.FOUR_INSTALLMENTS) {
+      const paidInstallments = paymentStatus.paymentInstallments.filter(
+        (i) => i.paid
+      );
+      const totalPaid = paidInstallments.reduce((sum, i) => sum + i.amount, 0);
+      remainingAmount = TOTAL_COURSE_FEE - totalPaid;
+    }
+
+    res.json({
+      ...paymentStatus,
+      remainingAmount,
+    });
+  } catch (error) {
+    console.error("Error fetching payment status:", error);
+    res.status(500).json({
+      error: "Failed to fetch payment status",
+      details: error instanceof Error ? error.message : "Unknown error",
+    });
+  }
+});
+
+//#region Link Generation
+paymentApp.get("/payment-link", async (req: Request, res: Response) => {
+  const { userId, courseId, planType } = req.query;
+
+  if (!userId || !courseId) {
+    return res.status(400).json({ error: "Missing userId or courseId" });
+  }
+
+  try {
+    // Validate planType if provided
+    const validPlanTypes = ["FULL", "HALF", "THREE_INSTALLMENT", "INSTALLMENT"];
+    if (planType && !validPlanTypes.includes(planType as string)) {
+      return res.status(400).json({ error: "Invalid plan type" });
+    }
+
+    // First find the payment status record for this user and course
+    const paymentStatus = await prismadb.paymentStatus.findUnique({
+      where: {
+        userId_courseId: {
+          userId: userId as string,
+          courseId: courseId as string,
+        },
+      },
+      include: {
+        transactions: {
+          where: {
+            status: "pending",
+            createdAt: { gt: new Date(Date.now() - 30 * 60 * 1000) },
+          },
+          orderBy: { createdAt: "desc" },
+          take: 1,
+        },
+        cohort: true, // Include cohort data
+      },
+    });
+
+    // Check for existing pending transaction first
+    if (paymentStatus && paymentStatus.transactions.length > 0) {
+      const pendingTx = paymentStatus.transactions[0];
+      if (pendingTx.authorizationUrl) {
+        return res.json({
+          authorizationUrl: pendingTx.authorizationUrl,
+          exists: true,
+        });
+      }
+    }
+
+    // If no active link but we need to create one, we MUST have a cohort
+    if (planType) {
+      if (!paymentStatus || !paymentStatus.cohort) {
+        return res.status(400).json({
+          error:
+            "No cohort assigned. Please initiate payment through the normal flow first.",
+        });
+      }
+
+      const [user, course] = await Promise.all([
+        getUserDetails(userId as string),
+        getCourseDetails(courseId as string),
+      ]);
+
+      // Use the cohort name from existing payment status
+      const cohortName = paymentStatus.cohort.name;
+
+      const paymentData = getPaymentData(planType as string, cohortName);
+      if (!paymentData) {
+        return res.status(400).json({ error: "Invalid plan type" });
+      }
+
+      const paymentLink = await paystack.transaction.initialize({
+        amount: `${paymentData.amount * 100}`,
+        email: user.email!,
+        metadata: {
+          ...paymentData.metadata,
+          userId,
+          courseId,
+          ...paymentData.callbackParams,
+        },
+        callback_url: `${process.env.PAYSTACK_CALLBACK_URL}`,
+      });
+
+      // Store the new transaction
+      await prismadb.paystackTransaction.create({
+        data: {
+          transactionRef: paymentLink.data.reference,
+          userId: userId as string,
+          courseId: courseId as string,
+          amount: paymentData.amount.toString(),
+          status: "pending",
+          authorizationUrl: paymentLink.data.authorization_url,
+          paymentPlan: paymentData.callbackParams.paymentPlan,
+          metadata: JSON.stringify(paymentData.metadata),
+          paymentDate: new Date(),
+        },
+      });
+
+      return res.json({
+        authorizationUrl: paymentLink.data.authorization_url,
+        exists: true,
+        isNew: true,
+      });
+    }
+
+    res.json({ exists: false });
+  } catch (error) {
+    console.error("Error fetching payment link:", error);
+    res.status(500).json({
+      error: "Failed to fetch payment link",
+      details: error instanceof Error ? error.message : "Unknown error",
+    });
+  }
+});
+
+//#region Payment Initialization Endpoints
+paymentApp.post("/initiate-payment", async (req: Request, res: Response) => {
+  const { courseId, userId, planType, cohortName } = req.body;
+
+  try {
+    const [user, course] = await Promise.all([
+      getUserDetails(userId),
+      getCourseDetails(courseId),
+    ]);
+
+    const existingPayment = await prismadb.paymentStatus.findUnique({
+      where: { userId_courseId: { userId, courseId } },
+      include: { paymentInstallments: true },
+    });
+
+    const [pendingTx] = await prismadb.paystackTransaction.findMany({
+      where: {
+        userId,
+        courseId,
+        status: "pending",
+        createdAt: { gt: new Date(Date.now() - 30 * 60 * 1000) },
+      },
+      orderBy: { createdAt: "desc" },
+      take: 1,
+    });
+
+    if (pendingTx?.authorizationUrl) {
+      return res.json({
+        authorizationUrl: pendingTx.authorizationUrl,
+        isExisting: true,
+      });
+    }
+
+    const paymentData = getPaymentData(planType, cohortName);
+    if (!paymentData) {
+      return res.status(400).json({ error: "Invalid plan type" });
+    }
+
+    const paymentLink = await paystack.transaction.initialize({
+      amount: `${paymentData.amount * 100}`,
+      email: user.email!,
+      metadata: {
+        ...paymentData.metadata,
+        userId,
+        courseId,
+        ...paymentData.callbackParams,
+      },
+      callback_url: `${process.env.PAYSTACK_CALLBACK_URL}`,
+    });
+
+    const transaction = await prismadb.$transaction(
+      async (tx) => {
+        if (!existingPayment) {
+          await createPaymentStatus(tx, {
+            userId,
+            courseId,
+            paymentData,
+            planType,
+            cohortName,
+          });
+        }
+
+        return tx.paystackTransaction.create({
+          data: {
+            transactionRef: paymentLink.data.reference,
+            userId,
+            courseId,
+            amount: paymentData.amount.toString(),
+            status: "pending",
+            authorizationUrl: paymentLink.data.authorization_url,
+            paymentPlan: paymentData.callbackParams.paymentPlan,
+            metadata: JSON.stringify(paymentData.metadata),
+            paymentDate: new Date(),
+          },
+        });
+      },
+      {
+        maxWait: 20000,
+        timeout: 15000,
+      }
+    );
+
+    res.json({
+      authorizationUrl: paymentLink.data.authorization_url,
+      isExisting: false,
+    });
+  } catch (error) {
+    console.error("Payment initiation error:", error);
+    res.status(500).json({
+      error: "Payment initiation failed",
+      details: error instanceof Error ? error.message : "Unknown error",
+    });
+  }
+});
+
+function getPaymentData(planType: string, cohortName: string) {
+  // Get cohort start date from the cohort name (extract month and year)
+  const cohortMatch = cohortName.match(/(\w+)\s+(\d{4})\s+Cohort/);
+  if (!cohortMatch) {
+    throw new Error("Invalid cohort name format");
+  }
+
+  const monthName = cohortMatch[1];
+  const year = parseInt(cohortMatch[2]);
+
+  const monthMap: { [key: string]: number } = {
+    January: 0,
+    February: 1,
+    March: 2,
+    April: 3,
+    May: 4,
+    June: 5,
+    July: 6,
+    August: 7,
+    September: 8,
+    October: 9,
+    November: 10,
+    December: 11,
+  };
+
+  const month = monthMap[monthName];
+  if (month === undefined) {
+    throw new Error("Invalid month name in cohort");
+  }
+
+  const startDate = new Date(year, month, 6); // 6th of the month as per your system
+
+  switch (planType) {
+    case "FULL":
+      return {
+        amount: TOTAL_COURSE_FEE,
+        metadata: { planType: "FULL", cohortName },
+        callbackParams: {
+          paymentPlan: PAYMENT_PLANS.FULL_PAYMENT,
+          cohortName,
+        },
+      };
+    case "HALF":
+      return {
+        amount: TOTAL_COURSE_FEE / 2,
+        metadata: { planType: "HALF", cohortName },
+        callbackParams: {
+          paymentPlan: PAYMENT_PLANS.FIRST_HALF_COMPLETE,
+          remainingAmount: TOTAL_COURSE_FEE / 2,
+          cohortName,
+        },
+      };
+    case "THREE_INSTALLMENT":
+      return {
+        amount: THREE_INSTALLMENT_CONFIG.initialPayment,
+        metadata: {
+          planType: "THREE_INSTALLMENT",
+          schedule: getThreeInstallmentSchedule(startDate),
+          cohortName,
+        },
+        callbackParams: {
+          paymentPlan: PAYMENT_PLANS.THREE_INSTALLMENTS,
+          installmentNumber: 1,
+          cohortName,
+        },
+      };
+    case "INSTALLMENT":
+      return {
+        amount: INSTALLMENT_CONFIG.seatReservation,
+        metadata: {
+          planType: "INSTALLMENT",
+          schedule: getCohortSchedule(startDate),
+          cohortName,
+        },
+        callbackParams: {
+          paymentPlan: PAYMENT_PLANS.FOUR_INSTALLMENTS,
+          installmentNumber: 1,
+          cohortName,
+        },
+      };
+    default:
+      return null;
+  }
+}
+
+async function createPaymentStatus(
+  tx: Prisma.TransactionClient,
+  params: {
+    userId: string;
+    courseId: string;
+    paymentData: any;
+    planType: string;
+    cohortName: string;
+  }
+) {
+  const cohort = await assignToSelectedCohort(
+    tx,
+    params.userId,
+    params.courseId,
+    params.cohortName,
+    params.paymentData.callbackParams.paymentPlan
+  );
+
+  const createData: any = {
+    userId: params.userId,
+    courseId: params.courseId,
+    paymentPlan: params.paymentData.callbackParams.paymentPlan,
+    paymentType: params.paymentData.callbackParams.paymentPlan,
+    status: PaymentStatusType.PENDING_SEAT_CONFIRMATION,
+    cohortId: cohort.cohortId,
+  };
+
+  if (
+    params.planType === "INSTALLMENT" ||
+    params.planType === "THREE_INSTALLMENT"
+  ) {
+    createData.desiredStartDate = cohort.actualStartDate;
+
+    // Use the actual cohort start date for installment scheduling
+    const actualStartDate = cohort.actualStartDate;
+
+    createData.paymentInstallments = {
+      create:
+        params.planType === "INSTALLMENT"
+          ? [
+              {
+                amount: INSTALLMENT_CONFIG.seatReservation,
+                dueDate: actualStartDate, // Due at cohort start
+                installmentNumber: 1,
+              },
+              {
+                amount: INSTALLMENT_CONFIG.cohortAccess,
+                dueDate: addMonths(actualStartDate, 0), // Same month as start
+                installmentNumber: 2,
+              },
+              {
+                amount: INSTALLMENT_CONFIG.month1,
+                dueDate: addMonths(actualStartDate, 1), // 1 month after start
+                installmentNumber: 3,
+              },
+              {
+                amount: INSTALLMENT_CONFIG.month2,
+                dueDate: addMonths(actualStartDate, 2), // 2 months after start
+                installmentNumber: 4,
+              },
+            ]
+          : [
+              {
+                amount: THREE_INSTALLMENT_CONFIG.initialPayment,
+                dueDate: actualStartDate, // Due at cohort start
+                installmentNumber: 1,
+              },
+              {
+                amount: THREE_INSTALLMENT_CONFIG.month1,
+                dueDate: addMonths(actualStartDate, 1), // 1 month after start
+                installmentNumber: 2,
+              },
+              {
+                amount: THREE_INSTALLMENT_CONFIG.month2,
+                dueDate: addMonths(actualStartDate, 2),
+                installmentNumber: 3,
+              },
+            ],
+    };
+  }
+
+  return tx.paymentStatus.create({ data: createData });
+}
+
+//#endregion
+
+//#region Payment Callback
+paymentApp.get("/payment/callback", async (req: Request, res: Response) => {
+  const { reference } = req.query;
+
+  try {
+    const verification = await paystack.transaction.verify(reference as string);
+
+    if (verification.data.status === "success") {
+      res.redirect(
+        `${process.env.NEXT_PUBLIC_APP_URL}/payment/success?reference=${reference}`
+      );
+    } else {
+      res.redirect(
+        `${process.env.NEXT_PUBLIC_APP_URL}/payment/failed?reference=${reference}`
+      );
+    }
+  } catch (error) {
+    res.redirect(
+      `${process.env.NEXT_PUBLIC_APP_URL}/payment/failed?reason=verification`
+    );
+  }
+});
+
+//#region Payment Verification
+//#region Payment Verification
+paymentApp.get("/verify", async (req: Request, res: Response) => {
+  const { reference } = req.query;
+
+  if (!reference) {
+    return res.status(400).json({ error: "Missing reference parameter" });
+  }
+
+  try {
+    const existingTx = await prismadb.paystackTransaction.findUnique({
+      where: { transactionRef: reference as string },
+      include: {
+        paymentStatus: {
+          include: {
+            paymentInstallments: {
+              orderBy: { installmentNumber: "asc" },
+            },
+            cohort: true,
+            user: {
+              select: { id: true, inactive: true },
+            },
+          },
+        },
+      },
+    });
+
+    if (!existingTx) {
+      return res.status(404).json({ error: "Transaction not found" });
+    }
+
+    if (existingTx.status === "success") {
+      return res.json({
+        status: "success",
+        data: existingTx,
+        message: "Payment already processed",
+      });
+    }
+
+    const verification = await paystack.transaction.verify(reference as string);
+
+    if (verification.data.status !== "success") {
+      await prismadb.paystackTransaction.update({
+        where: { transactionRef: reference as string },
+        data: {
+          status: "failed",
+          updatedAt: new Date(),
+        },
+      });
+
+      return res.status(400).json({
+        status: "error",
+        error: "Payment not successful",
+      });
+    }
+
+    const result = await prismadb.$transaction(
+      async (tx) => {
+        const updatedTx = await tx.paystackTransaction.update({
+          where: { transactionRef: reference as string },
+          data: {
+            status: "success",
+            paymentDate: new Date(),
+            updatedAt: new Date(),
+          },
+        });
+
+        const paymentPlan = await getPaymentPlanFromRecord(updatedTx);
+
+        // ✅ CRITICAL: Reactivate user if they were marked inactive
+        if (existingTx.paymentStatus?.user?.inactive) {
+          await tx.user.update({
+            where: { id: existingTx.userId },
+            data: { inactive: false },
+          });
+          console.log(
+            `Reactivated user ${existingTx.userId} after successful payment`
+          );
+        }
+
+        let paymentResult;
+        switch (paymentPlan) {
+          case PAYMENT_PLANS.FULL_PAYMENT:
+            paymentResult = await handleFullPayment(tx, {
+              userId: updatedTx.userId,
+              courseId: updatedTx.courseId,
+              reference: reference as string,
+            });
+            break;
+
+          case PAYMENT_PLANS.FIRST_HALF_COMPLETE:
+            paymentResult = await handleFirstHalfPayment(tx, {
+              userId: updatedTx.userId,
+              courseId: updatedTx.courseId,
+              reference: reference as string,
+            });
+            break;
+
+          case PAYMENT_PLANS.SECOND_HALF_PAYMENT:
+            paymentResult = await handleSecondHalfPayment(tx, {
+              userId: updatedTx.userId,
+              courseId: updatedTx.courseId,
+              reference: reference as string,
+            });
+            break;
+
+          case PAYMENT_PLANS.THREE_INSTALLMENTS:
+          case PAYMENT_PLANS.FOUR_INSTALLMENTS:
+            const metadata = JSON.parse(updatedTx.metadata || "{}");
+            paymentResult = await handleInstallmentPayment(
+              tx,
+              {
+                userId: updatedTx.userId,
+                courseId: updatedTx.courseId,
+                installmentNumber: metadata.installmentNumber || 1,
+                paymentPlan: paymentPlan,
+                reference: reference as string,
+              },
+              Number(updatedTx.amount)
+            );
+            break;
+        }
+
+        // ✅ CRITICAL: Verify purchase was created for all payment types
+        // Check if purchase already exists first
+        const existingPurchase = await tx.purchase.findFirst({
+          where: {
+            userId: updatedTx.userId,
+            courseId: updatedTx.courseId,
+          },
+        });
+
+        if (!existingPurchase) {
+          // Create purchase record if it doesn't exist
+          await tx.purchase.create({
+            data: {
+              userId: updatedTx.userId,
+              courseId: updatedTx.courseId,
+            },
+          });
+          console.log(
+            `✅ Created purchase record for user ${updatedTx.userId} and course ${updatedTx.courseId}`
+          );
+        }
+
+        return updatedTx;
+      },
+      {
+        maxWait: 30000,
+        timeout: 25000,
+      }
+    );
+
+    try {
+      const metadata = JSON.parse(result.metadata || "{}");
+      await sendPaymentNotifications(
+        result.userId,
+        result.courseId,
+        metadata.installmentNumber
+      );
+    } catch (emailError) {
+      console.error("Email notification failed:", emailError);
+    }
+
+    res.json({
+      status: "success",
+      data: result,
+      userReactivated: existingTx.paymentStatus?.user?.inactive,
+    });
+  } catch (error) {
+    console.error("Verification error:", error);
+    res.status(500).json({
+      status: "error",
+      error: "Payment verification failed",
+      details: error instanceof Error ? error.message : "Unknown error",
+    });
+  }
+});
+
+async function verifyPurchaseCreation(tx: Prisma.TransactionClient, userId: string, courseId: string) {
+  const purchase = await tx.purchase.findFirst({
+    where: {
+        userId,
+        courseId,
+    },
+  });
+  
+  if (!purchase) {
+    // Log more details about the issue
+    const user = await tx.user.findUnique({ where: { id: userId } });
+    const course = await tx.course.findUnique({ where: { id: courseId } });
+    
+    console.error(`Purchase record missing for:`, {
+      userId,
+      userEmail: user?.email,
+      courseId,
+      courseTitle: course?.title,
+      timestamp: new Date().toISOString()
+    });
+    
+    throw new Error(`Purchase record not created for user ${userId} and course ${courseId}`);
+  }
+  
+  
+  return purchase;
+}
+
+//#region Payment Handlers
+async function handleFullPayment(tx: Prisma.TransactionClient, metadata: any) {
+  try {
+    // For full payment, we need to get the cohort name from metadata
+    const existingTx = await tx.paystackTransaction.findUnique({
+      where: { transactionRef: metadata.reference },
+      include: { paymentStatus: true },
+    });
+
+    const txMetadata = existingTx
+      ? JSON.parse(existingTx.metadata || "{}")
+      : {};
+    const cohortName = txMetadata.cohortName;
+
+    if (!cohortName) {
+      throw new Error("Cohort name not found in transaction metadata");
+    }
+
+    const cohort = await assignToSelectedCohort(
+      tx,
+      metadata.userId,
+      metadata.courseId,
+      cohortName,
+      PAYMENT_PLANS.FULL_PAYMENT
+    );
+
+    const existingPayment = await tx.paymentStatus.findUnique({
+      where: {
+        userId_courseId: {
+          userId: metadata.userId,
+          courseId: metadata.courseId,
+        },
+      },
+    });
+
+    // ✅ CRITICAL: Check if purchase already exists first
+    const existingPurchase = await tx.purchase.findFirst({
+      where: {
+        userId: metadata.userId,
+        courseId: metadata.courseId,
+      },
+    });
+
+    if (!existingPurchase) {
+      await tx.purchase.create({
+        data: {
+          userId: metadata.userId,
+          courseId: metadata.courseId,
+        },
+      });
+    }
+
+    if (existingPayment) {
+      return tx.paymentStatus.update({
+        where: { id: existingPayment.id },
+        data: {
+          paymentPlan: PAYMENT_PLANS.FULL_PAYMENT,
+          status: PaymentStatusType.COMPLETE,
+          cohortId: cohort.cohortId,
+        },
+      });
+    }
+
+    return tx.paymentStatus.create({
+      data: {
+        userId: metadata.userId,
+        courseId: metadata.courseId,
+        paymentPlan: PAYMENT_PLANS.FULL_PAYMENT,
+        status: PaymentStatusType.COMPLETE,
+        cohortId: cohort.cohortId,
+      },
+    });
+  } catch (error) {
+    logPaymentError("Full payment processing failed", {
+      userId: metadata.userId,
+      courseId: metadata.courseId,
+      error: error instanceof Error ? error.message : "Unknown error",
+    });
+    throw error;
+  }
+}
+
+async function handleFirstHalfPayment(
+  tx: Prisma.TransactionClient,
+  metadata: any
+) {
+  try {
+    const existingTx = await tx.paystackTransaction.findUnique({
+      where: { transactionRef: metadata.reference },
+      include: { paymentStatus: true },
+    });
+
+    const txMetadata = existingTx ? JSON.parse(existingTx.metadata || "{}") : {};
+    const cohortName = txMetadata.cohortName;
+
+    if (!cohortName) {
+      throw new Error("Cohort name not found in transaction metadata");
+    }
+
+    const cohort = await assignToSelectedCohort(
+      tx,
+      metadata.userId,
+      metadata.courseId,
+      cohortName,
+      PAYMENT_PLANS.FIRST_HALF_COMPLETE
+    );
+
+    const existingPayment = await tx.paymentStatus.findUnique({
+      where: {
+        userId_courseId: {
+          userId: metadata.userId,
+          courseId: metadata.courseId,
+        },
+      },
+    });
+
+    // ✅ CRITICAL: Check if purchase already exists first
+    const existingPurchase = await tx.purchase.findFirst({
+      where: {
+          userId: metadata.userId,
+          courseId: metadata.courseId,
+      },
+    });
+
+    if (!existingPurchase) {
+      await tx.purchase.create({
+        data: {
+          userId: metadata.userId,
+          courseId: metadata.courseId,
+        },
+      });
+    }
+
+    if (existingPayment) {
+      return tx.paymentStatus.update({
+        where: { id: existingPayment.id },
+        data: {
+          paymentPlan: PAYMENT_PLANS.FIRST_HALF_COMPLETE,
+          status: PaymentStatusType.BALANCE_HALF_PAYMENT,
+          secondPaymentDueDate: addMonths(new Date(), 1),
+          cohortId: cohort.cohortId,
+        },
+      });
+    }
+
+    return tx.paymentStatus.create({
+      data: {
+        userId: metadata.userId,
+        courseId: metadata.courseId,
+        paymentPlan: PAYMENT_PLANS.FIRST_HALF_COMPLETE,
+        status: PaymentStatusType.BALANCE_HALF_PAYMENT,
+        secondPaymentDueDate: addMonths(new Date(), 1),
+        cohortId: cohort.cohortId,
+      },
+    });
+  } catch (error) {
+    logPaymentError("First half payment processing failed", {
+      userId: metadata.userId,
+      courseId: metadata.courseId,
+      error: error instanceof Error ? error.message : "Unknown error"
+    });
+    throw error;
+  }
+}
+
+async function handleSecondHalfPayment(
+  tx: Prisma.TransactionClient,
+  metadata: any
+) {
+  try {
+    const paymentStatus = await tx.paymentStatus.findUniqueOrThrow({
+      where: {
+        userId_courseId: {
+          userId: metadata.userId,
+          courseId: metadata.courseId,
+        },
+      },
+    });
+
+    // ✅ CRITICAL: Verify purchase exists for second half payments
+    await verifyPurchaseCreation(tx, metadata.userId, metadata.courseId);
+
+    return tx.paymentStatus.update({
+      where: { id: paymentStatus.id },
+      data: {
+        status: PaymentStatusType.COMPLETE,
+        paymentPlan: PAYMENT_PLANS.FULL_PAYMENT,
+      },
+    });
+  } catch (error) {
+    logPaymentError("Second half payment processing failed", {
+      userId: metadata.userId,
+      courseId: metadata.courseId,
+      error: error instanceof Error ? error.message : "Unknown error",
+    });
+    throw error;
+  }
+}
+
+async function handleInstallmentPayment(
+  tx: Prisma.TransactionClient,
+  metadata: any,
+  amountPaid: number
+) {
+  try {
+    const installmentNumber = parseInt(metadata.installmentNumber, 10);
+    const paymentStatus = await tx.paymentStatus.findUniqueOrThrow({
+      where: {
+        userId_courseId: {
+          userId: metadata.userId,
+          courseId: metadata.courseId,
+        },
+      },
+      include: {
+        paymentInstallments: {
+          orderBy: { installmentNumber: "asc" },
+        },
+      },
+    });
+
+    // FIX: Find the installment by number, not by paid status
+    const installmentToUpdate = paymentStatus.paymentInstallments.find(
+      (i) => i.installmentNumber === installmentNumber
+    );
+
+    if (!installmentToUpdate) {
+      throw new Error(
+        `Installment ${installmentNumber} not found for this payment plan`
+      );
+    }
+
+    // Check if already paid
+    if (installmentToUpdate.paid) {
+      console.log(`Installment ${installmentNumber} already paid, skipping`);
+      return installmentToUpdate; // Return early if already paid
+    }
+
+    const installment = await tx.paymentInstallment.update({
+      where: { id: installmentToUpdate.id },
+      data: { paid: true },
+      include: {
+        paymentStatus: {
+          include: { cohort: true },
+        },
+      },
+    });
+
+    const paymentPlan = await getPaymentPlanFromRecord(paymentStatus);
+
+    if (
+      (paymentPlan === PAYMENT_PLANS.THREE_INSTALLMENTS &&
+        installmentNumber === 1) ||
+      (paymentPlan === PAYMENT_PLANS.FOUR_INSTALLMENTS &&
+        installmentNumber === 2)
+    ) {
+      // Get the cohort from payment status
+      const cohort = await tx.cohort.findUnique({
+        where: { id: paymentStatus.cohortId },
+        select: { startDate: true },
+      });
+
+      if (!cohort) {
+        throw new Error("Assigned cohort not found");
+      }
+
+      await tx.paymentStatus.update({
+        where: { id: installment.paymentStatusId },
+        data: {
+          status: PaymentStatusType.BALANCE_HALF_PAYMENT,
+        },
+      });
+
+      const remainingInstallments = await tx.paymentInstallment.findMany({
+        where: {
+          paymentStatusId: paymentStatus.id,
+          installmentNumber: { gt: installmentNumber },
+        },
+      });
+
+      for (const remainingInstallment of remainingInstallments) {
+        const newDueDate = addMonths(
+          cohort.startDate,
+          remainingInstallment.installmentNumber -
+            (paymentPlan === PAYMENT_PLANS.THREE_INSTALLMENTS ? 1 : 2)
+        );
+
+        await tx.paymentInstallment.update({
+          where: { id: remainingInstallment.id },
+          data: { dueDate: newDueDate },
+        });
+      }
+    }
+
+    if (
+      (paymentPlan === PAYMENT_PLANS.THREE_INSTALLMENTS &&
+        installmentNumber === 1) ||
+      (paymentPlan === PAYMENT_PLANS.FOUR_INSTALLMENTS &&
+        installmentNumber === 2)
+    ) {
+      await tx.userCohort.updateMany({
+        where: {
+          userId: metadata.userId,
+          courseId: metadata.courseId,
+        },
+        data: { isPaymentActive: true },
+      });
+
+      // ✅ CRITICAL: Create purchase record when access is granted
+      await tx.purchase.create({
+        data: {
+          userId: metadata.userId,
+          courseId: metadata.courseId,
+        },
+      });
+    }
+
+    const isFinalInstallment =
+      (paymentPlan === PAYMENT_PLANS.THREE_INSTALLMENTS &&
+        installmentNumber === 3) ||
+      (paymentPlan === PAYMENT_PLANS.FOUR_INSTALLMENTS &&
+        installmentNumber === 4);
+
+    if (isFinalInstallment) {
+      await tx.paymentStatus.update({
+        where: { id: installment.paymentStatusId },
+        data: { status: PaymentStatusType.COMPLETE },
+      });
+    }
+
+    return installment;
+  } catch (error) {
+    logPaymentError("Installment payment processing failed", {
+      userId: metadata.userId,
+      courseId: metadata.courseId,
+      installmentNumber: metadata.installmentNumber,
+      error: error instanceof Error ? error.message : "Unknown error",
+    });
+    throw error;
+  }
+}
+//#endregion
+
+//#region Purchase Status Endpoint
+paymentApp.get("/purchase-status", async (req: Request, res: Response) => {
+  const { userId, courseId } = req.query;
+
+  if (!userId || !courseId) {
+    return res.status(400).json({ error: "Missing userId or courseId" });
+  }
+
+  try {
+    const purchase = await prismadb.purchase.findFirst({
+      where: {
+        userId: userId as string,
+        courseId: courseId as string,
+      },
+    });
+
+    res.json({ hasPurchase: !!purchase, purchase });
+  } catch (error) {
+    res.status(500).json({ error: "Failed to check purchase status" });
+  }
+});
+//#endregion
+
+//#region Cron Jobs
+cron.schedule("0 * * * *", async () => {
+  const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000);
+
+  await prismadb.paystackTransaction.updateMany({
+    where: {
+      status: "pending",
+      createdAt: { lt: thirtyMinutesAgo },
+    },
+    data: {
+      status: "expired",
+    },
+  });
+});
+
+cron.schedule("0 9 * * *", async () => {
+  const today = new Date();
+
+  // Find installments due in the next 3 days
+  const dueInstallments = await prismadb.paymentInstallment.findMany({
+    where: {
+      dueDate: {
+        lte: new Date(today.getTime() + 3 * 86400000),
+        gte: today,
+      },
+      paid: false,
+      lastReminderSent: {
+        lt: new Date(today.getTime() - 86400000), // Only send once per day
+      },
+    },
+    include: {
+      paymentStatus: {
+        include: {
+          user: true,
+          course: true,
+          cohort: true,
+        },
+      },
+    },
+  });
+
+  for (const installment of dueInstallments) {
+    try {
+      const paymentPlan = getPaymentPlan(installment.paymentStatus);
+
+      // Calculate days until due
+      const daysUntilDue = Math.ceil(
+        (installment.dueDate.getTime() - today.getTime()) / 86400000
+      );
+
+      const paymentLink = await paystack.transaction
+        .initialize({
+          amount: `${installment.amount * 100}`,
+          email: installment.paymentStatus.user.email!,
+          metadata: {
+            installmentId: installment.id,
+            paymentPlan: paymentPlan,
+            userId: installment.paymentStatus.userId,
+            courseId: installment.paymentStatus.courseId,
+            installmentNumber: installment.installmentNumber,
+          },
+          callback_url: process.env.PAYSTACK_CALLBACK_URL,
+        })
+        .then((res) => res.data.authorization_url);
+
+      await sendPaymentReminder(
+        installment.paymentStatus.user.email!,
+        installment.paymentStatus.user.name || "Student",
+        installment.paymentStatus.course.title,
+        installment.installmentNumber,
+        installment.dueDate,
+        installment.amount,
+        paymentLink,
+        daysUntilDue
+      );
+
+      await prismadb.paymentInstallment.update({
+        where: { id: installment.id },
+        data: { lastReminderSent: new Date() },
+      });
+    } catch (error) {
+      console.error(
+        `Reminder failed for installment ${installment.id}:`,
+        error
+      );
+    }
+  }
+});
+
+// Comprehensive Fixed Cron Job - No Premature Deactivation
+cron.schedule("0 0 * * *", async () => {
+  console.log("Running overdue payment check...");
+
+  try {
+    const overduePayments = await prismadb.paymentInstallment.findMany({
+      where: {
+        dueDate: { lt: new Date() },
+        paid: false,
+        paymentStatus: {
+          status: {
+            notIn: [PaymentStatusType.EXPIRED, PaymentStatusType.COMPLETE],
+          },
+        },
+      },
+      include: {
+        paymentStatus: {
+          include: {
+            course: { include: { cohorts: true } },
+            cohort: true,
+            user: { select: { id: true, name: true, email: true } },
+            paymentInstallments: {
+              orderBy: { installmentNumber: "asc" },
+            },
+          },
+        },
+      },
+    });
+
+    console.log(
+      `Found ${overduePayments.length} potentially overdue installments`
+    );
+
+    for (const installment of overduePayments) {
+      try {
+        const paymentStatus = installment.paymentStatus;
+        const allInstallments = paymentStatus.paymentInstallments;
+        const paymentPlan = getPaymentPlan(paymentStatus);
+        const cohortStartDate = paymentStatus.cohort?.startDate;
+        const now = new Date();
+
+        let shouldDeactivate = false;
+        let reason = "";
+
+        // CRITICAL: Only deactivate based on cohort progress, never on absolute dates alone
+        if (cohortStartDate) {
+          const cohortHasStarted = now >= cohortStartDate;
+          const daysSinceCohortStart = cohortHasStarted
+            ? Math.floor(
+                (now.getTime() - cohortStartDate.getTime()) /
+                  (24 * 60 * 60 * 1000)
+              )
+            : -1;
+          const monthsSinceCohortStart = Math.floor(
+            daysSinceCohortStart / 30.44
+          );
+
+          console.log(
+            `Checking user ${paymentStatus.user.email} - Plan: ${paymentPlan}, Installment: ${installment.installmentNumber}, Cohort Started: ${cohortHasStarted}, Days Since Start: ${daysSinceCohortStart}`
+          );
+
+          if (paymentPlan === PAYMENT_PLANS.FULL_PAYMENT) {
+            // Full payment - should never be deactivated if payment was made
+            shouldDeactivate = false;
+          } else if (paymentPlan === PAYMENT_PLANS.FIRST_HALF_COMPLETE) {
+            // Two installment plan (Half payments)
+            const paidCount = allInstallments.filter((i) => i.paid).length;
+
+            if (installment.installmentNumber === 1) {
+              // First half - should be paid before cohort starts
+              if (cohortHasStarted && paidCount === 0) {
+                const gracePeriodDays = 7;
+                if (daysSinceCohortStart > gracePeriodDays) {
+                  shouldDeactivate = true;
+                  reason =
+                    "First half payment not made after cohort started + grace period";
+                }
+              }
+            } else if (installment.installmentNumber === 2) {
+              // Second half - due based on secondPaymentDueDate, typically 1 month after first payment
+              if (paymentStatus.secondPaymentDueDate) {
+                const secondPaymentOverdue =
+                  now > paymentStatus.secondPaymentDueDate;
+                const gracePeriodDays = 14; // More lenient for second half
+                const gracePeriodEnd = new Date(
+                  paymentStatus.secondPaymentDueDate.getTime() +
+                    gracePeriodDays * 24 * 60 * 60 * 1000
+                );
+
+                if (now > gracePeriodEnd && paidCount < 2) {
+                  shouldDeactivate = true;
+                  reason = "Second half payment overdue after grace period";
+                }
+              }
+            }
+          } else if (paymentPlan === PAYMENT_PLANS.THREE_INSTALLMENTS) {
+            // Three installment plan
+            const paidCount = allInstallments.filter((i) => i.paid).length;
+
+            if (installment.installmentNumber === 1) {
+              // First installment - should be paid before/at cohort start
+              if (cohortHasStarted && paidCount === 0) {
+                const gracePeriodDays = 7;
+                if (daysSinceCohortStart > gracePeriodDays) {
+                  shouldDeactivate = true;
+                  reason =
+                    "First installment not paid after cohort started + grace period";
+                }
+              }
+            } else if (installment.installmentNumber === 2) {
+              // Second installment - due 1 month AFTER cohort starts
+              if (cohortHasStarted && monthsSinceCohortStart >= 1) {
+                const gracePeriodDays = 14; // 2-week grace for second installment
+                const expectedDueDate = addMonths(cohortStartDate, 1);
+                const gracePeriodEnd = new Date(
+                  expectedDueDate.getTime() +
+                    gracePeriodDays * 24 * 60 * 60 * 1000
+                );
+
+                if (now > gracePeriodEnd && paidCount < 2) {
+                  shouldDeactivate = true;
+                  reason =
+                    "Second installment overdue (1 month into cohort + grace period)";
+                }
+              }
+            } else if (installment.installmentNumber === 3) {
+              // Third installment - due 2 months AFTER cohort starts
+              if (cohortHasStarted && monthsSinceCohortStart >= 2) {
+                const gracePeriodDays = 21; // 3-week grace for final installment
+                const expectedDueDate = addMonths(cohortStartDate, 2);
+                const gracePeriodEnd = new Date(
+                  expectedDueDate.getTime() +
+                    gracePeriodDays * 24 * 60 * 60 * 1000
+                );
+
+                if (now > gracePeriodEnd && paidCount < 3) {
+                  shouldDeactivate = true;
+                  reason =
+                    "Final installment overdue (2 months into cohort + grace period)";
+                }
+              }
+            }
+          } else if (paymentPlan === PAYMENT_PLANS.FOUR_INSTALLMENTS) {
+            // Four installment plan
+            const paidCount = allInstallments.filter((i) => i.paid).length;
+
+            if (installment.installmentNumber === 1) {
+              // Seat reservation - should be paid before cohort starts
+              if (cohortHasStarted && paidCount === 0) {
+                const gracePeriodDays = 7;
+                if (daysSinceCohortStart > gracePeriodDays) {
+                  shouldDeactivate = true;
+                  reason =
+                    "Seat reservation not paid after cohort started + grace period";
+                }
+              }
+            } else if (installment.installmentNumber === 2) {
+              // Cohort access - due AT cohort start
+              if (cohortHasStarted) {
+                const gracePeriodDays = 7; // Short grace for cohort access
+                if (daysSinceCohortStart > gracePeriodDays && paidCount < 2) {
+                  shouldDeactivate = true;
+                  reason = "Cohort access payment not made after grace period";
+                }
+              }
+            } else if (installment.installmentNumber === 3) {
+              // Month 1 payment - due 1 month AFTER cohort starts
+              if (cohortHasStarted && monthsSinceCohortStart >= 1) {
+                const gracePeriodDays = 14;
+                const expectedDueDate = addMonths(cohortStartDate, 1);
+                const gracePeriodEnd = new Date(
+                  expectedDueDate.getTime() +
+                    gracePeriodDays * 24 * 60 * 60 * 1000
+                );
+
+                if (now > gracePeriodEnd && paidCount < 3) {
+                  shouldDeactivate = true;
+                  reason =
+                    "Month 1 payment overdue (1 month into cohort + grace period)";
+                }
+              }
+            } else if (installment.installmentNumber === 4) {
+              // Month 2 payment - due 2 months AFTER cohort starts
+              if (cohortHasStarted && monthsSinceCohortStart >= 2) {
+                const gracePeriodDays = 21; // More grace for final payment
+                const expectedDueDate = addMonths(cohortStartDate, 2);
+                const gracePeriodEnd = new Date(
+                  expectedDueDate.getTime() +
+                    gracePeriodDays * 24 * 60 * 60 * 1000
+                );
+
+                if (now > gracePeriodEnd && paidCount < 4) {
+                  shouldDeactivate = true;
+                  reason =
+                    "Final payment overdue (2 months into cohort + grace period)";
+                }
+              }
+            }
+          }
+        } else {
+          // Fallback for payments without cohort assignment (edge case)
+          console.log(
+            `Warning: Payment status ${paymentStatus.id} has no cohort assigned`
+          );
+
+          // Very lenient fallback - only deactivate if REALLY overdue
+          const daysPastDue = Math.floor(
+            (now.getTime() - installment.dueDate.getTime()) /
+              (24 * 60 * 60 * 1000)
+          );
+          if (daysPastDue > 30) {
+            // 30-day grace for edge cases
+            shouldDeactivate = true;
+            reason = "No cohort assigned and payment overdue by 30+ days";
+          }
+        }
+
+        if (shouldDeactivate) {
+          console.log(
+            `🚫 DEACTIVATING user ${paymentStatus.user.email} - Reason: ${reason}`
+          );
+
+          let nextCohort = null;
+
+          await prismadb.$transaction([
+            prismadb.user.update({
+              where: { id: paymentStatus.userId },
+              data: { inactive: true },
+            }),
+            prismadb.paymentStatus.update({
+              where: { id: paymentStatus.id },
+              data: { status: PaymentStatusType.EXPIRED },
+            }),
+          ]);
+
+          // Move to next available cohort
+          if (paymentStatus.cohort) {
+            nextCohort = paymentStatus.course.cohorts
+              .filter((c) => c.startDate > paymentStatus.cohort!.startDate)
+              .sort((a, b) => a.startDate.getTime() - b.startDate.getTime())[0];
+
+            if (nextCohort) {
+              await prismadb.userCohort.updateMany({
+                where: {
+                  userId: paymentStatus.userId,
+                  courseId: paymentStatus.courseId,
+                },
+                data: { cohortId: nextCohort.id },
+              });
+              console.log(`➡️  Moved user to next cohort: ${nextCohort.name}`);
+            }
+          }
+
+          // Send deactivation notification email
+          try {
+            const overdueDays = Math.floor(
+              (now.getTime() - installment.dueDate.getTime()) /
+                (24 * 60 * 60 * 1000)
+            );
+            await sendAccountDeactivationNotification(
+              paymentStatus.user.email!,
+              paymentStatus.user.name || "Student",
+              paymentStatus.course.title,
+              paymentPlan || "Unknown Plan",
+              overdueDays,
+              installment.installmentNumber,
+              nextCohort?.startDate
+            );
+          } catch (emailError) {
+            console.error(
+              `Failed to send deactivation email to ${paymentStatus.user.email}:`,
+              emailError
+            );
+          }
+        } else {
+          console.log(
+            `✅ User ${paymentStatus.user.email} installment ${installment.installmentNumber} - No deactivation needed`
+          );
+        }
+      } catch (error) {
+        console.error(
+          `❌ Overdue handling failed for installment ${installment.id}:`,
+          error
+        );
+      }
+    }
+
+    console.log("✅ Overdue payment check completed");
+  } catch (error) {
+    console.error("❌ Overdue payment cron job failed:", error);
+  }
+});
+
+//safety cron job - runs weekly to catch any incorrectly deactivated users
+cron.schedule("0 3 * * 1", async () => {
+  // Monday 3 AM
+  console.log("🔍 Running weekly payment status audit...");
+
+  try {
+    // Find recently deactivated users who might have been incorrectly processed
+    const recentlyDeactivated = await prismadb.user.findMany({
+      where: {
+        inactive: true,
+        updatedAt: {
+          gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000), // Last 7 days
+        },
+      },
+      include: {
+        paymentStatus: {
+          where: {
+            status: PaymentStatusType.EXPIRED,
+          },
+          include: {
+            cohort: true,
+            paymentInstallments: {
+              orderBy: { installmentNumber: "asc" },
+            },
+          },
+        },
+      },
+    });
+
+    for (const user of recentlyDeactivated) {
+      for (const paymentStatus of user.paymentStatus) {
+        const paidCount = paymentStatus.paymentInstallments.filter(
+          (i) => i.paid
+        ).length;
+        const totalInstallments = paymentStatus.paymentInstallments.length;
+        const paymentPlan = getPaymentPlan(paymentStatus);
+        const cohortStartDate = paymentStatus.cohort?.startDate;
+
+        // Flag suspicious deactivations for manual review
+        let suspicious = false;
+        let suspiciousReason = "";
+
+        if (cohortStartDate && cohortStartDate > new Date()) {
+          // Cohort hasn't started yet but user was deactivated
+          suspicious = true;
+          suspiciousReason = "Deactivated before cohort started";
+        } else if (paidCount > 0 && paidCount === totalInstallments) {
+          // All installments paid but still deactivated
+          suspicious = true;
+          suspiciousReason = "All installments paid but deactivated";
+        } else if (paymentPlan === PAYMENT_PLANS.FULL_PAYMENT) {
+          // Full payment users should never be deactivated
+          suspicious = true;
+          suspiciousReason = "Full payment user deactivated";
+        }
+
+        if (suspicious) {
+          console.log(
+            `🚨 SUSPICIOUS DEACTIVATION: User ${user.email} - ${suspiciousReason} - Needs manual review`
+          );
+
+          // Send alert email for wrongful deactivation
+          try {
+            await sendWrongfulDeactivationAlert(
+              user.email!,
+              user.name || "Student",
+              paymentStatus.cohort?.name || "Unknown Course",
+              paymentPlan || "Unknown Plan",
+              suspiciousReason,
+              user.email!
+            );
+          } catch (emailError) {
+            console.error(
+              `Failed to send wrongful deactivation alert for ${user.email}:`,
+              emailError
+            );
+          }
+        }
+      }
+    }
+
+    console.log("✅ Weekly audit completed");
+  } catch (error) {
+    console.error("❌ Weekly audit failed:", error);
+  }
+});
+//#endregion
+
+//#region Admin Tracking
+const convertBigIntToNumber = (obj: any): any => {
+  if (obj === null || obj === undefined) {
+    return obj;
+  }
+
+  if (typeof obj === "bigint") {
+    return Number(obj);
+  }
+
+  if (Array.isArray(obj)) {
+    return obj.map(convertBigIntToNumber);
+  }
+
+  if (typeof obj === "object") {
+    const converted: any = {};
+    for (const [key, value] of Object.entries(obj)) {
+      converted[key] = convertBigIntToNumber(value);
+    }
+    return converted;
+  }
+
+  return obj;
+};
+
+paymentApp.get("/admin/payments", async (req: Request, res: Response) => {
+  try {
+    const {
+      status,
+      paymentPlan,
+      courseId,
+      cohortId,
+      search,
+      page = 1,
+      limit = 20,
+      sortBy = "createdAt",
+      sortOrder = "desc",
+    } = req.query;
+
+    const where: any = {};
+
+    if (status) where.status = status;
+    if (paymentPlan) where.paymentPlan = paymentPlan;
+    if (courseId) where.courseId = courseId;
+    if (cohortId) where.cohortId = cohortId;
+
+    if (search) {
+      where.OR = [
+        {
+          user: {
+            name: {
+              contains: search,
+              mode: "insensitive",
+            },
+          },
+        },
+        {
+          user: {
+            email: {
+              contains: search,
+              mode: "insensitive",
+            },
+          },
+        },
+      ];
+    }
+
+    const payments = await prismadb.paymentStatus.findMany({
+      where,
+      include: {
+        user: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+            phone_number: true,
+          },
+        },
+        course: {
+          select: {
+            id: true,
+            title: true,
+          },
+        },
+        cohort: {
+          select: {
+            id: true,
+            name: true,
+            startDate: true,
+            endDate: true,
+          },
+        },
+        paymentInstallments: {
+          orderBy: {
+            installmentNumber: "asc",
+          },
+        },
+      },
+      skip: (Number(page) - 1) * Number(limit),
+      take: Number(limit),
+      orderBy: {
+        [sortBy as string]: sortOrder,
+      },
+    });
+
+    const total = await prismadb.paymentStatus.count({ where });
+
+    const metricsRaw = await prismadb.$queryRaw<
+      Array<{
+        totalPayments: bigint;
+        completedPayments: bigint;
+        pendingPayments: bigint;
+        pendingSeatConfirmations: bigint;
+        expiredPayments: bigint;
+      }>
+    >`
+      SELECT 
+        COUNT(*) as "totalPayments",
+        SUM(CASE WHEN status = 'COMPLETE' THEN 1 ELSE 0 END) as "completedPayments",
+        SUM(CASE WHEN status = 'BALANCE_HALF_PAYMENT' THEN 1 ELSE 0 END) as "pendingPayments",
+        SUM(CASE WHEN status = 'PENDING_SEAT_CONFIRMATION' THEN 1 ELSE 0 END) as "pendingSeatConfirmations",
+        SUM(CASE WHEN status = 'EXPIRED' THEN 1 ELSE 0 END) as "expiredPayments"
+      FROM "PaymentStatus"
+    `;
+
+    const metrics = convertBigIntToNumber(metricsRaw[0]);
+
+    res.json({
+      data: payments,
+      pagination: {
+        total,
+        page: Number(page),
+        limit: Number(limit),
+        totalPages: Math.ceil(total / Number(limit)),
+      },
+      metrics,
+    });
+  } catch (error) {
+    console.error("Error fetching payment data:", error);
+    res.status(500).json({
+      error: "Failed to fetch payment data",
+      details: error instanceof Error ? error.message : "Unknown error",
+    });
+  }
+});
+
+paymentApp.get("/admin/payments/stats", async (req: Request, res: Response) => {
+  try {
+    const totalRevenueRaw = await prismadb.$queryRaw<
+      { total: bigint | null }[]
+    >`
+      SELECT 
+        SUM(CASE 
+          WHEN "paymentPlan" = 'FULL_PAYMENT' THEN ${TOTAL_COURSE_FEE}
+          WHEN "paymentPlan" = 'FIRST_HALF_COMPLETE' AND status = 'COMPLETE' THEN ${TOTAL_COURSE_FEE}
+          WHEN "paymentPlan" = 'FIRST_HALF_COMPLETE' AND status = 'BALANCE_HALF_PAYMENT' THEN ${
+            TOTAL_COURSE_FEE / 2
+          }
+          WHEN "paymentPlan" = 'FOUR_INSTALLMENTS' THEN (
+            SELECT COALESCE(SUM(amount), 0)
+            FROM "PaymentInstallment" 
+            WHERE "paymentStatusId" = "PaymentStatus".id AND paid = true
+          )
+          ELSE 0
+        END) as total
+      FROM "PaymentStatus"
+      WHERE status != 'EXPIRED'
+    `;
+
+    const revenueByTypeRaw = await prismadb.$queryRaw<
+      Array<{
+        paymentPlan: string;
+        revenue: bigint;
+        count: bigint;
+      }>
+    >`
+      SELECT 
+        "paymentPlan",
+        SUM(CASE 
+          WHEN "paymentPlan" = 'FULL_PAYMENT' THEN ${TOTAL_COURSE_FEE}
+          WHEN "paymentPlan" = 'FIRST_HALF_COMPLETE' AND status = 'COMPLETE' THEN ${TOTAL_COURSE_FEE}
+          WHEN "paymentPlan" = 'FIRST_HALF_COMPLETE' AND status = 'BALANCE_HALF_PAYMENT' THEN ${
+            TOTAL_COURSE_FEE / 2
+          }
+          WHEN "paymentPlan" = 'FOUR_INSTALLMENTS' THEN (
+            SELECT COALESCE(SUM(amount), 0)
+            FROM "PaymentInstallment" 
+            WHERE "paymentStatusId" = "PaymentStatus".id AND paid = true
+          )
+          ELSE 0
+        END) as revenue,
+        COUNT(*) as count
+      FROM "PaymentStatus"
+      WHERE status != 'EXPIRED'
+      GROUP BY "paymentPlan"
+    `;
+
+    const revenueByCourseRaw = await prismadb.$queryRaw<
+      Array<{
+        id: string;
+        title: string;
+        revenue: bigint;
+        count: bigint;
+      }>
+    >`
+      SELECT 
+        c.id,
+        c.title,
+        SUM(CASE 
+          WHEN ps."paymentPlan" = 'FULL_PAYMENT' THEN ${TOTAL_COURSE_FEE}
+          WHEN ps."paymentPlan" = 'FIRST_HALF_COMPLETE' AND ps.status = 'COMPLETE' THEN ${TOTAL_COURSE_FEE}
+          WHEN ps."paymentPlan" = 'FIRST_HALF_COMPLETE' AND ps.status = 'BALANCE_HALF_PAYMENT' THEN ${
+            TOTAL_COURSE_FEE / 2
+          }
+          WHEN ps."paymentPlan" = 'FOUR_INSTALLMENTS' THEN (
+            SELECT COALESCE(SUM(amount), 0)
+            FROM "PaymentInstallment" 
+            WHERE "paymentStatusId" = ps.id AND paid = true
+          )
+          ELSE 0
+        END) as revenue,
+        COUNT(*) as count
+      FROM "PaymentStatus" ps
+      JOIN "Course" c ON ps."courseId" = c.id
+      WHERE ps.status != 'EXPIRED'
+      GROUP BY c.id, c.title
+      ORDER BY revenue DESC
+      LIMIT 5
+    `;
+
+    const totalRevenue = convertBigIntToNumber(totalRevenueRaw[0]?.total ?? 0);
+    const revenueByType = convertBigIntToNumber(revenueByTypeRaw);
+    const revenueByCourse = convertBigIntToNumber(revenueByCourseRaw);
+
+    res.json({
+      totalRevenue,
+      revenueByType,
+      revenueByCourse,
+    });
+  } catch (error) {
+    console.error("Error fetching payment stats:", error);
+    res.status(500).json({
+      error: "Failed to fetch payment stats",
+      details: error instanceof Error ? error.message : "Unknown error",
+    });
+  }
+});
+
+export default paymentApp;

@@ -1,0 +1,16 @@
+{
+  "compilerOptions": {
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "baseUrl": "src",
+    "target": "ES2020",
+    "downlevelIteration": true,
+    
+    "paths": {
+      "*": ["node_modules/*", "src/types/*"]
+    },
+    "outDir": "dist",
+    "sourceMap": true,
+    "noImplicitAny": true
+  }
+}

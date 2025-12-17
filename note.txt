@@ -1,0 +1,156 @@
+   "watch": ["src"],
+   "include": ["src/**/*"],
+
+   npm i typescript ts-node express prisma @prisma/client http lodash mongoose cookie-parser compression body-parser nodemon cors @types/cors @types/express @types/cookie-parser @types/compression @types/lodash
+
+   DATABASE_URL="postgresql://#########################"
+
+JWT_SECRET=JWT-SECRET
+
+SESSION_SECRET=SESSION-SECRET
+
+RESEND_API_KEY=re_################
+
+GOOGLE_CLIENT_ID=your_google_client_id
+GOOGLE_CLIENT_SECRET=your_google_client_secret
+GITHUB_CLIENT_ID=your_github_client_id
+GITHUB_CLIENT_SECRET=your_github_client_secret
+
+NEXT_PUBLIC_APP_URL="http://localhost:3000"
+
+
+
+
+
+** Get course returns attachment and videourl 
+only if course has been purchased by logged in user
+** User progress on video completion
+** Ongoing course
+** Completed Courses
+
+** Cohort Addition
+** Change a user's Cohort
+** Get a cohort a only if a user is enrolled or the user is admin
+
+** Quizzes
+** User quiz answer tracking
+** Leaderboard
+
+** Payment Integration
+** Add users to Cohort after payment
+
+
+
+TESTING
+** Remove hook form from course week update 
+** Re-enable Authentication - email verification (null)
+** Test the seeding
+** Add header to course Admin
+
+** Test cohort quiz and sumbmission
+** Test leaderboard ranking sytem
+** Fix duplication issue
+** Test seeding
+
+** Percentage payment - null
+** Scripts to auto create cohorts montly and auto publish course week every week for each cohort - null
+
+
+
+// Schedule the job to run at 12:00 AM on the first day of every month
+
+// Add a job to run immediately - FOR TEST
+// cohortQueue.add({}, { attempts: 3 });
+
+cohortQueue.add(
+  {},
+  {
+    repeat: {
+      cron: '*/1 * * * *', // Runs every minute
+    },
+  }
+);
+
+
+
+
+
+With that information, is this cron script correct:
+
+import cron from 'node-cron';
+import { prismadb } from './src/index';
+import { createCohort } from './src/controllers/cohort';
+import { Prisma } from '@prisma/client';
+
+// Function to generate the cohort name
+function generateCohortName(): string {
+  const now = new Date();
+  const month = now.toLocaleString('default', { month: 'long' });
+  const year = now.getFullYear();
+  return `${month} ${year} Cohort`;
+}
+
+// Function to get the next course ID (you may need to adjust this logic)
+async function getNextCourseId(): Promise {
+  const latestCourse = await prismadb.course.findFirst({
+    orderBy: { createdAt: 'desc' },
+  });
+  return latestCourse?.id || '';
+}
+
+// Function to create a new cohort
+async function createMonthlyCohort(): Promise {
+  try {
+    const name = generateCohortName();
+    const startDate = new Date(); // Today's date
+    const endDate = new Date(startDate);
+    endDate.setMonth(endDate.getMonth() + 1); // End date is one month from now
+
+    const courseId = await getNextCourseId();
+
+    if (!courseId) {
+      console.error('No course found to create a cohort');
+      return;
+    }
+
+    const newCohort = await prismadb.cohort.create({
+      data: {
+        name,
+        startDate,
+        endDate,
+        courseId,
+      },
+    });
+
+    console.log(`New cohort created: ${newCohort.name}`);
+
+    // Call the createCohort function to handle additional logic
+    await createCohort(
+      //@ts-ignore
+      {
+        body: {
+          name,
+          startDate: startDate.toISOString(),
+          endDate: endDate.toISOString(),
+          courseId,
+        },
+      } as unknown as Express.Request,
+      {
+        status: (code: number) => ({
+          json: (data: any) => console.log(`Cohort creation response:`, data),
+        }),
+      } as unknown as Express.Response
+    );
+
+  } catch (error) {
+    console.error('Error creating monthly cohort:', error);
+  }
+}
+
+// Schedule the cron job to run at 12:00 AM on the first day of every month
+cron.schedule('0 0 1 * *', createMonthlyCohort, {
+  scheduled: true,
+  timezone: 'UTC', // Adjust the timezone as needed
+});
+
+console.log('Cohort creation cron job scheduled');
