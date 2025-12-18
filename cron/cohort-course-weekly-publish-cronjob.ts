@@ -1,4 +1,3 @@
-//@ts-nocheck
 const { PrismaClient } = require("@prisma/client");
 const Queue = require("bull");
 const { config } = require("dotenv");
