@@ -3,7 +3,8 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.generateNewhashedPassword = exports.generateRandomChar = void 0;
+exports.generateRandomChar = generateRandomChar;
+exports.generateNewhashedPassword = generateNewhashedPassword;
 const bcryptjs_1 = __importDefault(require("bcryptjs"));
 function generateRandomChar(length) {
     const characters = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
@@ -14,11 +15,9 @@ function generateRandomChar(length) {
     }
     return { result };
 }
-exports.generateRandomChar = generateRandomChar;
 async function generateNewhashedPassword() {
     const { result } = generateRandomChar(8);
     const hashedPassword = await bcryptjs_1.default.hash(result, 10);
     return hashedPassword;
 }
-exports.generateNewhashedPassword = generateNewhashedPassword;
 //# sourceMappingURL=generateNewhashedPassword.js.map

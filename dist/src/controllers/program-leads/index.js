@@ -3,7 +3,10 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.exportProgramLeads = exports.getProgramLeadsCount = exports.getProgramLeads = exports.createProgramLead = void 0;
+exports.createProgramLead = createProgramLead;
+exports.getProgramLeads = getProgramLeads;
+exports.getProgramLeadsCount = getProgramLeadsCount;
+exports.exportProgramLeads = exportProgramLeads;
 const index_1 = require("../../../src/index");
 const exceljs_1 = __importDefault(require("exceljs"));
 async function createProgramLead(req, res) {
@@ -54,7 +57,6 @@ async function createProgramLead(req, res) {
         return res.status(500).json({ message: "Internal Server Error" });
     }
 }
-exports.createProgramLead = createProgramLead;
 async function getProgramLeads(req, res) {
     try {
         const { programType } = req.query;
@@ -72,7 +74,6 @@ async function getProgramLeads(req, res) {
         return res.status(500).json({ message: "Internal Server Error" });
     }
 }
-exports.getProgramLeads = getProgramLeads;
 async function getProgramLeadsCount(req, res) {
     try {
         const counts = await index_1.prismadb.programLeads.groupBy({
@@ -88,7 +89,6 @@ async function getProgramLeadsCount(req, res) {
         return res.status(500).json({ message: "Internal Server Error" });
     }
 }
-exports.getProgramLeadsCount = getProgramLeadsCount;
 async function exportProgramLeads(req, res) {
     try {
         const { programType } = req.query;
@@ -142,5 +142,4 @@ async function exportProgramLeads(req, res) {
         return res.status(500).json({ message: "Internal Server Error" });
     }
 }
-exports.exportProgramLeads = exportProgramLeads;
 //# sourceMappingURL=index.js.map

@@ -3,7 +3,15 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.refreshAccessToken = exports.resetPassword = exports.forgotPassword = exports.resendEmailVerification = exports.verifyEmail = exports.register = exports.account = exports.googleAuth = exports.login = void 0;
+exports.login = login;
+exports.googleAuth = googleAuth;
+exports.account = account;
+exports.register = register;
+exports.verifyEmail = verifyEmail;
+exports.resendEmailVerification = resendEmailVerification;
+exports.forgotPassword = forgotPassword;
+exports.resetPassword = resetPassword;
+exports.refreshAccessToken = refreshAccessToken;
 const index_1 = require("../../../src/index");
 const bcryptjs_1 = __importDefault(require("bcryptjs"));
 const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
@@ -81,7 +89,6 @@ async function login(req, res) {
         res.status(500).json({ message: "Internal Server Error" });
     }
 }
-exports.login = login;
 async function googleAuth(req, res) {
     try {
         const { email, name, googleId, image, } = req.body;
@@ -159,7 +166,6 @@ async function googleAuth(req, res) {
         res.status(500).json({ message: "Internal Server Error" });
     }
 }
-exports.googleAuth = googleAuth;
 async function account(req, res) {
     try {
         const { userId, type, provider, providerAccountId, refresh_token, access_token, expires_at, token_type, scope, id_token, session_state, } = req.body;
@@ -191,7 +197,6 @@ async function account(req, res) {
         res.status(500).json({ message: "Internal Server Error" });
     }
 }
-exports.account = account;
 async function register(req, res) {
     try {
         const { name, password, phone_number } = req.body;
@@ -246,7 +251,6 @@ async function register(req, res) {
         res.status(500).json({ message: "Internal Server Error" });
     }
 }
-exports.register = register;
 async function verifyEmail(req, res) {
     try {
         const { code } = req.body;
@@ -294,7 +298,6 @@ async function verifyEmail(req, res) {
         res.status(500).json({ message: "Internal Server Error" });
     }
 }
-exports.verifyEmail = verifyEmail;
 async function resendEmailVerification(req, res) {
     try {
         const { email } = req.body;
@@ -320,7 +323,6 @@ async function resendEmailVerification(req, res) {
         res.status(500).json({ message: "Internal Server Error" });
     }
 }
-exports.resendEmailVerification = resendEmailVerification;
 async function forgotPassword(req, res) {
     try {
         const { email } = req.body;
@@ -347,7 +349,6 @@ async function forgotPassword(req, res) {
         res.status(500).json({ message: "Internal Server Error" });
     }
 }
-exports.forgotPassword = forgotPassword;
 async function resetPassword(req, res) {
     try {
         const { code, password, password_confirmation, } = req.body;
@@ -394,7 +395,6 @@ async function resetPassword(req, res) {
         res.status(500).json({ message: "Internal Server Error" });
     }
 }
-exports.resetPassword = resetPassword;
 async function refreshAccessToken(req, res) {
     try {
         const { refresh_token } = req.body;
@@ -441,5 +441,4 @@ async function refreshAccessToken(req, res) {
         res.status(500).json({ message: "Internal Server Error" });
     }
 }
-exports.refreshAccessToken = refreshAccessToken;
 //# sourceMappingURL=index.js.map
