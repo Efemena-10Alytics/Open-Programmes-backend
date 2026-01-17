@@ -98,20 +98,18 @@ function getPaymentPlan(record) {
     return record.paymentPlan || record.paymentType || null;
 }
 async function assignToSelectedCohort(tx, userId, courseId, cohortName, paymentPlan) {
+    // Fetch all cohorts for the course to perform robust matching
     const course = await tx.course.findUniqueOrThrow({
         where: { id: courseId },
         include: {
-            cohorts: {
-                where: {
-                    name: cohortName,
-                },
-            },
+            cohorts: true, // Fetch all cohorts
         },
     });
-    if (!course.cohorts.length) {
+    // Find cohort with case-insensitive and whitespace-insensitive matching
+    const targetCohort = course.cohorts.find((c) => c.name.trim().toLowerCase() === cohortName.trim().toLowerCase());
+    if (!targetCohort) {
         throw new Error(`Cohort "${cohortName}" not found for this course`);
     }
-    const targetCohort = course.cohorts[0];
     let isPaymentActive = false;
     if (paymentPlan === PAYMENT_PLANS.FULL_PAYMENT) {
         isPaymentActive = true;
