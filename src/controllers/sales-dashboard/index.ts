@@ -1,7 +1,7 @@
 // controllers/sales-dashboard.ts
 import express from "express";
 import { Request, Response } from "express";
-import { prismadb } from "../../index";
+import { prismadb } from "../../lib/prismadb";
 import { startOfMonth, endOfMonth, startOfYear, endOfYear, eachMonthOfInterval, format } from "date-fns";
 
 const salesDashboardApp = express.Router();
@@ -36,9 +36,9 @@ const convertBigIntToNumber = (obj: any): any => {
 salesDashboardApp.get("/monthly-sales", async (req: Request, res: Response) => {
   try {
     const { year, month } = req.query;
-    
+
     let startDate: Date, endDate: Date;
-    
+
     if (year && month) {
       startDate = new Date(Number(year), Number(month) - 1, 1);
       endDate = new Date(Number(year), Number(month), 0, 23, 59, 59);
@@ -108,12 +108,12 @@ salesDashboardApp.get("/monthly-sales", async (req: Request, res: Response) => {
 
     // Group by user
     const userPayments: Record<string, { user: any; total: number; payments: any[] }> = {};
-    
+
     monthlyPayments.forEach(payment => {
       const userId = payment.userId;
       const user = userMap.get(userId) || { id: userId, name: "Unknown User", email: "No email available" };
       const course = courseMap.get(payment.courseId) || { id: payment.courseId, title: "Unknown Course" };
-      
+
       if (!userPayments[userId]) {
         userPayments[userId] = {
           user: user,
@@ -121,7 +121,7 @@ salesDashboardApp.get("/monthly-sales", async (req: Request, res: Response) => {
           payments: []
         };
       }
-      
+
       userPayments[userId].total += Number(payment.amount);
       userPayments[userId].payments.push({
         id: payment.id,
@@ -154,13 +154,13 @@ salesDashboardApp.get("/yearly-sales", async (req: Request, res: Response) => {
   try {
     const { year } = req.query;
     const targetYear = year ? Number(year) : new Date().getFullYear();
-    
+
     const startDate = new Date(targetYear, 0, 1);
     const endDate = new Date(targetYear, 11, 31, 23, 59, 59);
-    
+
     // Get all months in the year
     const months = eachMonthOfInterval({ start: startDate, end: endDate });
-    
+
     // Get successful payments for the year
     const yearlyPayments = await prismadb.paystackTransaction.findMany({
       where: {
@@ -171,12 +171,12 @@ salesDashboardApp.get("/yearly-sales", async (req: Request, res: Response) => {
         },
       },
     });
-    
+
     // Initialize monthly data
     const monthlyData = months.map(month => {
       const monthStart = startOfMonth(month);
       const monthEnd = endOfMonth(month);
-      
+
       return {
         month: format(month, 'MMMM'),
         year: targetYear,
@@ -186,21 +186,21 @@ salesDashboardApp.get("/yearly-sales", async (req: Request, res: Response) => {
         transactions: 0
       };
     });
-    
+
     // Calculate revenue per month
     yearlyPayments.forEach(payment => {
       const paymentDate = payment.paymentDate;
       if (!paymentDate) return;
-      
+
       const monthIndex = new Date(paymentDate).getMonth();
       monthlyData[monthIndex].revenue += Number(payment.amount);
       monthlyData[monthIndex].transactions += 1;
     });
-    
+
     // Calculate total yearly revenue
     const totalYearlyRevenue = monthlyData.reduce((sum, month) => sum + month.revenue, 0);
     const totalYearlyTransactions = monthlyData.reduce((sum, month) => sum + month.transactions, 0);
-    
+
     res.json({
       year: targetYear,
       totalRevenue: totalYearlyRevenue,
@@ -250,18 +250,18 @@ salesDashboardApp.get("/programs-enrollment", async (req: Request, res: Response
         }
       }
     });
-    
+
     // Format the data
     const programsData = coursesWithEnrollment.map(course => {
       const activeEnrollments = course.paymentStatuses.filter(
         ps => ps.status !== "EXPIRED"
       ).length;
-      
+
       // Calculate cohort enrollments
       const cohortEnrollments = course.cohorts.reduce((sum, cohort) => {
         return sum + cohort._count.users;
       }, 0);
-      
+
       return {
         id: course.id,
         title: course.title,
@@ -276,7 +276,7 @@ salesDashboardApp.get("/programs-enrollment", async (req: Request, res: Response
         }))
       };
     });
-    
+
     res.json(programsData);
   } catch (error) {
     console.error("Error fetching programs enrollment:", error);
@@ -291,20 +291,20 @@ salesDashboardApp.get("/programs-enrollment", async (req: Request, res: Response
 salesDashboardApp.get("/dashboard", async (req: Request, res: Response) => {
   try {
     const { period } = req.query; // 'month' or 'year'
-    
+
     // Convert environment variable to number with fallback
     const TOTAL_COURSE_FEE = Number(process.env.TOTAL_COURSE_FEE) || 250000;
     const HALF_COURSE_FEE = TOTAL_COURSE_FEE / 2;
-    
+
     // Get current period data
     const now = new Date();
     const currentPeriodStart = period === 'year' ? startOfYear(now) : startOfMonth(now);
     const currentPeriodEnd = period === 'year' ? endOfYear(now) : endOfMonth(now);
-    
+
     // Get previous period data
     const previousPeriodStart = new Date(currentPeriodStart);
     const previousPeriodEnd = new Date(currentPeriodEnd);
-    
+
     if (period === 'year') {
       previousPeriodStart.setFullYear(previousPeriodStart.getFullYear() - 1);
       previousPeriodEnd.setFullYear(previousPeriodEnd.getFullYear() - 1);
@@ -312,7 +312,7 @@ salesDashboardApp.get("/dashboard", async (req: Request, res: Response) => {
       previousPeriodStart.setMonth(previousPeriodStart.getMonth() - 1);
       previousPeriodEnd.setMonth(previousPeriodEnd.getMonth() - 1);
     }
-    
+
     // Get payments for both periods
     const [currentPayments, previousPayments] = await Promise.all([
       prismadb.paystackTransaction.findMany({
@@ -334,16 +334,16 @@ salesDashboardApp.get("/dashboard", async (req: Request, res: Response) => {
         },
       }),
     ]);
-    
+
     // Calculate revenue
     const currentRevenue = currentPayments.reduce((sum, payment) => sum + Number(payment.amount), 0);
     const previousRevenue = previousPayments.reduce((sum, payment) => sum + Number(payment.amount), 0);
-    
+
     // Calculate growth percentage
-    const growthPercentage = previousRevenue > 0 
-      ? ((currentRevenue - previousRevenue) / previousRevenue) * 100 
+    const growthPercentage = previousRevenue > 0
+      ? ((currentRevenue - previousRevenue) / previousRevenue) * 100
       : currentRevenue > 0 ? 100 : 0;
-    
+
     // Get top courses by revenue
     const topCourses = await prismadb.$queryRaw<
       Array<{
@@ -374,7 +374,7 @@ salesDashboardApp.get("/dashboard", async (req: Request, res: Response) => {
       ORDER BY revenue DESC
       LIMIT 5
     `;
-    
+
     // Get payment plan distribution
     const paymentPlanDistribution = await prismadb.$queryRaw<
       Array<{
@@ -401,7 +401,7 @@ salesDashboardApp.get("/dashboard", async (req: Request, res: Response) => {
       WHERE status != 'EXPIRED'
       GROUP BY "paymentPlan"
     `;
-    
+
     res.json({
       summary: {
         currentRevenue,

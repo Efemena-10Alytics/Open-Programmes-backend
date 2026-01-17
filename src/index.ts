@@ -7,13 +7,13 @@ import compression from "compression";
 import cors from "cors";
 import dotenv from "dotenv";
 import cron from "node-cron";
-import { PrismaClient } from "@prisma/client";
+import { prismadb } from "./lib/prismadb";
+export { prismadb };
+
 import router from "./route";
 import paymentApp from "./controllers/paystack";
-import salesDashboardApp from "./controllers/sales-dashboard"; 
+import salesDashboardApp from "./controllers/sales-dashboard";
 import path from "path";
-
-export const prismadb = new PrismaClient();
 
 const app = express();
 

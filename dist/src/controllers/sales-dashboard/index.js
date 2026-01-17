@@ -5,7 +5,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 // controllers/sales-dashboard.ts
 const express_1 = __importDefault(require("express"));
-const index_1 = require("../../index");
+const prismadb_1 = require("../../lib/prismadb");
 const date_fns_1 = require("date-fns");
 const salesDashboardApp = express_1.default.Router();
 salesDashboardApp.use(express_1.default.json());
@@ -45,7 +45,7 @@ salesDashboardApp.get("/monthly-sales", async (req, res) => {
             endDate = (0, date_fns_1.endOfMonth)(now);
         }
         // Get successful payments for the month
-        const monthlyPayments = await index_1.prismadb.paystackTransaction.findMany({
+        const monthlyPayments = await prismadb_1.prismadb.paystackTransaction.findMany({
             where: {
                 status: "success",
                 paymentDate: {
@@ -80,11 +80,11 @@ salesDashboardApp.get("/monthly-sales", async (req, res) => {
         const userIds = [...new Set(monthlyPayments.map(p => p.userId))];
         const courseIds = [...new Set(monthlyPayments.map(p => p.courseId))];
         const [users, courses] = await Promise.all([
-            index_1.prismadb.user.findMany({
+            prismadb_1.prismadb.user.findMany({
                 where: { id: { in: userIds } },
                 select: { id: true, name: true, email: true }
             }),
-            index_1.prismadb.course.findMany({
+            prismadb_1.prismadb.course.findMany({
                 where: { id: { in: courseIds } },
                 select: { id: true, title: true }
             })
@@ -144,7 +144,7 @@ salesDashboardApp.get("/yearly-sales", async (req, res) => {
         // Get all months in the year
         const months = (0, date_fns_1.eachMonthOfInterval)({ start: startDate, end: endDate });
         // Get successful payments for the year
-        const yearlyPayments = await index_1.prismadb.paystackTransaction.findMany({
+        const yearlyPayments = await prismadb_1.prismadb.paystackTransaction.findMany({
             where: {
                 status: "success",
                 paymentDate: {
@@ -197,7 +197,7 @@ salesDashboardApp.get("/yearly-sales", async (req, res) => {
 salesDashboardApp.get("/programs-enrollment", async (req, res) => {
     try {
         // Get all courses with their purchase counts
-        const coursesWithEnrollment = await index_1.prismadb.course.findMany({
+        const coursesWithEnrollment = await prismadb_1.prismadb.course.findMany({
             include: {
                 _count: {
                     select: {
@@ -282,7 +282,7 @@ salesDashboardApp.get("/dashboard", async (req, res) => {
         }
         // Get payments for both periods
         const [currentPayments, previousPayments] = await Promise.all([
-            index_1.prismadb.paystackTransaction.findMany({
+            prismadb_1.prismadb.paystackTransaction.findMany({
                 where: {
                     status: "success",
                     paymentDate: {
@@ -291,7 +291,7 @@ salesDashboardApp.get("/dashboard", async (req, res) => {
                     },
                 },
             }),
-            index_1.prismadb.paystackTransaction.findMany({
+            prismadb_1.prismadb.paystackTransaction.findMany({
                 where: {
                     status: "success",
                     paymentDate: {
@@ -309,7 +309,7 @@ salesDashboardApp.get("/dashboard", async (req, res) => {
             ? ((currentRevenue - previousRevenue) / previousRevenue) * 100
             : currentRevenue > 0 ? 100 : 0;
         // Get top courses by revenue
-        const topCourses = await index_1.prismadb.$queryRaw `
+        const topCourses = await prismadb_1.prismadb.$queryRaw `
       SELECT 
         c.id,
         c.title,
@@ -332,7 +332,7 @@ salesDashboardApp.get("/dashboard", async (req, res) => {
       LIMIT 5
     `;
         // Get payment plan distribution
-        const paymentPlanDistribution = await index_1.prismadb.$queryRaw `
+        const paymentPlanDistribution = await prismadb_1.prismadb.$queryRaw `
       SELECT 
         "paymentPlan",
         COUNT(*) as count,

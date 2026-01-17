@@ -1,6 +1,6 @@
 import express from "express";
 import { Request, Response } from "express";
-import { prismadb } from "../../index";
+import { prismadb } from "../../lib/prismadb";
 import { Paystack } from "paystack-sdk";
 import { Prisma, PaymentStatusType } from "@prisma/client";
 import {
@@ -19,9 +19,19 @@ import {
   isWithinInterval,
 } from "date-fns";
 
+if (!process.env.PAYSTACK_SECRET_KEY) {
+  console.warn("⚠️ PAYSTACK_SECRET_KEY is missing from environment variables!");
+}
+
 const paystack = new Paystack(process.env.PAYSTACK_SECRET_KEY as string);
 const paymentApp = express.Router();
 paymentApp.use(express.json());
+
+// Logging middleware for payment routes
+paymentApp.use((req, res, next) => {
+  console.log(`[Payment] ${req.method} ${req.path}`, req.body || req.query);
+  next();
+});
 
 // Define payment plans as constants
 const PAYMENT_PLANS = {
@@ -645,44 +655,44 @@ async function createPaymentStatus(
       create:
         params.planType === "INSTALLMENT"
           ? [
-              {
-                amount: INSTALLMENT_CONFIG.seatReservation,
-                dueDate: actualStartDate, // Due at cohort start
-                installmentNumber: 1,
-              },
-              {
-                amount: INSTALLMENT_CONFIG.cohortAccess,
-                dueDate: addMonths(actualStartDate, 0), // Same month as start
-                installmentNumber: 2,
-              },
-              {
-                amount: INSTALLMENT_CONFIG.month1,
-                dueDate: addMonths(actualStartDate, 1), // 1 month after start
-                installmentNumber: 3,
-              },
-              {
-                amount: INSTALLMENT_CONFIG.month2,
-                dueDate: addMonths(actualStartDate, 2), // 2 months after start
-                installmentNumber: 4,
-              },
-            ]
+            {
+              amount: INSTALLMENT_CONFIG.seatReservation,
+              dueDate: actualStartDate, // Due at cohort start
+              installmentNumber: 1,
+            },
+            {
+              amount: INSTALLMENT_CONFIG.cohortAccess,
+              dueDate: addMonths(actualStartDate, 0), // Same month as start
+              installmentNumber: 2,
+            },
+            {
+              amount: INSTALLMENT_CONFIG.month1,
+              dueDate: addMonths(actualStartDate, 1), // 1 month after start
+              installmentNumber: 3,
+            },
+            {
+              amount: INSTALLMENT_CONFIG.month2,
+              dueDate: addMonths(actualStartDate, 2), // 2 months after start
+              installmentNumber: 4,
+            },
+          ]
           : [
-              {
-                amount: THREE_INSTALLMENT_CONFIG.initialPayment,
-                dueDate: actualStartDate, // Due at cohort start
-                installmentNumber: 1,
-              },
-              {
-                amount: THREE_INSTALLMENT_CONFIG.month1,
-                dueDate: addMonths(actualStartDate, 1), // 1 month after start
-                installmentNumber: 2,
-              },
-              {
-                amount: THREE_INSTALLMENT_CONFIG.month2,
-                dueDate: addMonths(actualStartDate, 2),
-                installmentNumber: 3,
-              },
-            ],
+            {
+              amount: THREE_INSTALLMENT_CONFIG.initialPayment,
+              dueDate: actualStartDate, // Due at cohort start
+              installmentNumber: 1,
+            },
+            {
+              amount: THREE_INSTALLMENT_CONFIG.month1,
+              dueDate: addMonths(actualStartDate, 1), // 1 month after start
+              installmentNumber: 2,
+            },
+            {
+              amount: THREE_INSTALLMENT_CONFIG.month2,
+              dueDate: addMonths(actualStartDate, 2),
+              installmentNumber: 3,
+            },
+          ],
     };
   }
 
@@ -896,16 +906,16 @@ paymentApp.get("/verify", async (req: Request, res: Response) => {
 async function verifyPurchaseCreation(tx: Prisma.TransactionClient, userId: string, courseId: string) {
   const purchase = await tx.purchase.findFirst({
     where: {
-        userId,
-        courseId,
+      userId,
+      courseId,
     },
   });
-  
+
   if (!purchase) {
     // Log more details about the issue
     const user = await tx.user.findUnique({ where: { id: userId } });
     const course = await tx.course.findUnique({ where: { id: courseId } });
-    
+
     console.error(`Purchase record missing for:`, {
       userId,
       userEmail: user?.email,
@@ -913,11 +923,11 @@ async function verifyPurchaseCreation(tx: Prisma.TransactionClient, userId: stri
       courseTitle: course?.title,
       timestamp: new Date().toISOString()
     });
-    
+
     throw new Error(`Purchase record not created for user ${userId} and course ${courseId}`);
   }
-  
-  
+
+
   return purchase;
 }
 
@@ -1040,8 +1050,8 @@ async function handleFirstHalfPayment(
     // ✅ CRITICAL: Check if purchase already exists first
     const existingPurchase = await tx.purchase.findFirst({
       where: {
-          userId: metadata.userId,
-          courseId: metadata.courseId,
+        userId: metadata.userId,
+        courseId: metadata.courseId,
       },
     });
 
@@ -1204,7 +1214,7 @@ async function handleInstallmentPayment(
         const newDueDate = addMonths(
           cohort.startDate,
           remainingInstallment.installmentNumber -
-            (paymentPlan === PAYMENT_PLANS.THREE_INSTALLMENTS ? 1 : 2)
+          (paymentPlan === PAYMENT_PLANS.THREE_INSTALLMENTS ? 1 : 2)
         );
 
         await tx.paymentInstallment.update({
@@ -1424,9 +1434,9 @@ cron.schedule("0 0 * * *", async () => {
           const cohortHasStarted = now >= cohortStartDate;
           const daysSinceCohortStart = cohortHasStarted
             ? Math.floor(
-                (now.getTime() - cohortStartDate.getTime()) /
-                  (24 * 60 * 60 * 1000)
-              )
+              (now.getTime() - cohortStartDate.getTime()) /
+              (24 * 60 * 60 * 1000)
+            )
             : -1;
           const monthsSinceCohortStart = Math.floor(
             daysSinceCohortStart / 30.44
@@ -1461,7 +1471,7 @@ cron.schedule("0 0 * * *", async () => {
                 const gracePeriodDays = 14; // More lenient for second half
                 const gracePeriodEnd = new Date(
                   paymentStatus.secondPaymentDueDate.getTime() +
-                    gracePeriodDays * 24 * 60 * 60 * 1000
+                  gracePeriodDays * 24 * 60 * 60 * 1000
                 );
 
                 if (now > gracePeriodEnd && paidCount < 2) {
@@ -1491,7 +1501,7 @@ cron.schedule("0 0 * * *", async () => {
                 const expectedDueDate = addMonths(cohortStartDate, 1);
                 const gracePeriodEnd = new Date(
                   expectedDueDate.getTime() +
-                    gracePeriodDays * 24 * 60 * 60 * 1000
+                  gracePeriodDays * 24 * 60 * 60 * 1000
                 );
 
                 if (now > gracePeriodEnd && paidCount < 2) {
@@ -1507,7 +1517,7 @@ cron.schedule("0 0 * * *", async () => {
                 const expectedDueDate = addMonths(cohortStartDate, 2);
                 const gracePeriodEnd = new Date(
                   expectedDueDate.getTime() +
-                    gracePeriodDays * 24 * 60 * 60 * 1000
+                  gracePeriodDays * 24 * 60 * 60 * 1000
                 );
 
                 if (now > gracePeriodEnd && paidCount < 3) {
@@ -1547,7 +1557,7 @@ cron.schedule("0 0 * * *", async () => {
                 const expectedDueDate = addMonths(cohortStartDate, 1);
                 const gracePeriodEnd = new Date(
                   expectedDueDate.getTime() +
-                    gracePeriodDays * 24 * 60 * 60 * 1000
+                  gracePeriodDays * 24 * 60 * 60 * 1000
                 );
 
                 if (now > gracePeriodEnd && paidCount < 3) {
@@ -1563,7 +1573,7 @@ cron.schedule("0 0 * * *", async () => {
                 const expectedDueDate = addMonths(cohortStartDate, 2);
                 const gracePeriodEnd = new Date(
                   expectedDueDate.getTime() +
-                    gracePeriodDays * 24 * 60 * 60 * 1000
+                  gracePeriodDays * 24 * 60 * 60 * 1000
                 );
 
                 if (now > gracePeriodEnd && paidCount < 4) {
@@ -1583,7 +1593,7 @@ cron.schedule("0 0 * * *", async () => {
           // Very lenient fallback - only deactivate if REALLY overdue
           const daysPastDue = Math.floor(
             (now.getTime() - installment.dueDate.getTime()) /
-              (24 * 60 * 60 * 1000)
+            (24 * 60 * 60 * 1000)
           );
           if (daysPastDue > 30) {
             // 30-day grace for edge cases
@@ -1632,7 +1642,7 @@ cron.schedule("0 0 * * *", async () => {
           try {
             const overdueDays = Math.floor(
               (now.getTime() - installment.dueDate.getTime()) /
-                (24 * 60 * 60 * 1000)
+              (24 * 60 * 60 * 1000)
             );
             await sendAccountDeactivationNotification(
               paymentStatus.user.email!,
@@ -1911,9 +1921,8 @@ paymentApp.get("/admin/payments/stats", async (req: Request, res: Response) => {
         SUM(CASE 
           WHEN "paymentPlan" = 'FULL_PAYMENT' THEN ${TOTAL_COURSE_FEE}
           WHEN "paymentPlan" = 'FIRST_HALF_COMPLETE' AND status = 'COMPLETE' THEN ${TOTAL_COURSE_FEE}
-          WHEN "paymentPlan" = 'FIRST_HALF_COMPLETE' AND status = 'BALANCE_HALF_PAYMENT' THEN ${
-            TOTAL_COURSE_FEE / 2
-          }
+          WHEN "paymentPlan" = 'FIRST_HALF_COMPLETE' AND status = 'BALANCE_HALF_PAYMENT' THEN ${TOTAL_COURSE_FEE / 2
+      }
           WHEN "paymentPlan" = 'FOUR_INSTALLMENTS' THEN (
             SELECT COALESCE(SUM(amount), 0)
             FROM "PaymentInstallment" 
@@ -1937,9 +1946,8 @@ paymentApp.get("/admin/payments/stats", async (req: Request, res: Response) => {
         SUM(CASE 
           WHEN "paymentPlan" = 'FULL_PAYMENT' THEN ${TOTAL_COURSE_FEE}
           WHEN "paymentPlan" = 'FIRST_HALF_COMPLETE' AND status = 'COMPLETE' THEN ${TOTAL_COURSE_FEE}
-          WHEN "paymentPlan" = 'FIRST_HALF_COMPLETE' AND status = 'BALANCE_HALF_PAYMENT' THEN ${
-            TOTAL_COURSE_FEE / 2
-          }
+          WHEN "paymentPlan" = 'FIRST_HALF_COMPLETE' AND status = 'BALANCE_HALF_PAYMENT' THEN ${TOTAL_COURSE_FEE / 2
+      }
           WHEN "paymentPlan" = 'FOUR_INSTALLMENTS' THEN (
             SELECT COALESCE(SUM(amount), 0)
             FROM "PaymentInstallment" 
@@ -1967,9 +1975,8 @@ paymentApp.get("/admin/payments/stats", async (req: Request, res: Response) => {
         SUM(CASE 
           WHEN ps."paymentPlan" = 'FULL_PAYMENT' THEN ${TOTAL_COURSE_FEE}
           WHEN ps."paymentPlan" = 'FIRST_HALF_COMPLETE' AND ps.status = 'COMPLETE' THEN ${TOTAL_COURSE_FEE}
-          WHEN ps."paymentPlan" = 'FIRST_HALF_COMPLETE' AND ps.status = 'BALANCE_HALF_PAYMENT' THEN ${
-            TOTAL_COURSE_FEE / 2
-          }
+          WHEN ps."paymentPlan" = 'FIRST_HALF_COMPLETE' AND ps.status = 'BALANCE_HALF_PAYMENT' THEN ${TOTAL_COURSE_FEE / 2
+      }
           WHEN ps."paymentPlan" = 'FOUR_INSTALLMENTS' THEN (
             SELECT COALESCE(SUM(amount), 0)
             FROM "PaymentInstallment" 

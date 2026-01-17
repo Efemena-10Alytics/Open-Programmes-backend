@@ -4,15 +4,23 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 const express_1 = __importDefault(require("express"));
-const index_1 = require("../../index");
+const prismadb_1 = require("../../lib/prismadb");
 const paystack_sdk_1 = require("paystack-sdk");
 const client_1 = require("@prisma/client");
 const mail_1 = require("./mail");
 const node_cron_1 = __importDefault(require("node-cron"));
 const date_fns_1 = require("date-fns");
+if (!process.env.PAYSTACK_SECRET_KEY) {
+    console.warn("⚠️ PAYSTACK_SECRET_KEY is missing from environment variables!");
+}
 const paystack = new paystack_sdk_1.Paystack(process.env.PAYSTACK_SECRET_KEY);
 const paymentApp = express_1.default.Router();
 paymentApp.use(express_1.default.json());
+// Logging middleware for payment routes
+paymentApp.use((req, res, next) => {
+    console.log(`[Payment] ${req.method} ${req.path}`, req.body || req.query);
+    next();
+});
 // Define payment plans as constants
 const PAYMENT_PLANS = {
     FULL_PAYMENT: "FULL_PAYMENT",
@@ -47,7 +55,7 @@ const getThreeInstallmentSchedule = (startDate) => ({
     month2Due: (0, date_fns_1.addMonths)(startDate, 2),
 });
 async function getCourseDetails(courseId) {
-    return index_1.prismadb.course.findUniqueOrThrow({
+    return prismadb_1.prismadb.course.findUniqueOrThrow({
         where: { id: courseId },
         select: {
             id: true,
@@ -65,7 +73,7 @@ async function getCourseDetails(courseId) {
     });
 }
 async function getUserDetails(userId) {
-    return index_1.prismadb.user.findUniqueOrThrow({
+    return prismadb_1.prismadb.user.findUniqueOrThrow({
         where: { id: userId },
         select: {
             id: true,
@@ -153,7 +161,7 @@ async function sendPaymentNotifications(userId, courseId, installmentNumber) {
     const [user, course, paymentStatus] = await Promise.all([
         getUserDetails(userId),
         getCourseDetails(courseId),
-        index_1.prismadb.paymentStatus.findUnique({
+        prismadb_1.prismadb.paymentStatus.findUnique({
             where: { userId_courseId: { userId, courseId } },
             include: {
                 paymentInstallments: { orderBy: { installmentNumber: "asc" } },
@@ -199,7 +207,7 @@ paymentApp.get("/payment-status", async (req, res) => {
             .json({ error: "Missing required parameters: userId and courseId" });
     }
     try {
-        const paymentStatus = await index_1.prismadb.paymentStatus.findUnique({
+        const paymentStatus = await prismadb_1.prismadb.paymentStatus.findUnique({
             where: {
                 userId_courseId: {
                     userId: userId,
@@ -254,7 +262,7 @@ paymentApp.get("/payment-link", async (req, res) => {
             return res.status(400).json({ error: "Invalid plan type" });
         }
         // First find the payment status record for this user and course
-        const paymentStatus = await index_1.prismadb.paymentStatus.findUnique({
+        const paymentStatus = await prismadb_1.prismadb.paymentStatus.findUnique({
             where: {
                 userId_courseId: {
                     userId: userId,
@@ -312,7 +320,7 @@ paymentApp.get("/payment-link", async (req, res) => {
                 callback_url: `${process.env.PAYSTACK_CALLBACK_URL}`,
             });
             // Store the new transaction
-            await index_1.prismadb.paystackTransaction.create({
+            await prismadb_1.prismadb.paystackTransaction.create({
                 data: {
                     transactionRef: paymentLink.data.reference,
                     userId: userId,
@@ -349,11 +357,11 @@ paymentApp.post("/initiate-payment", async (req, res) => {
             getUserDetails(userId),
             getCourseDetails(courseId),
         ]);
-        const existingPayment = await index_1.prismadb.paymentStatus.findUnique({
+        const existingPayment = await prismadb_1.prismadb.paymentStatus.findUnique({
             where: { userId_courseId: { userId, courseId } },
             include: { paymentInstallments: true },
         });
-        const [pendingTx] = await index_1.prismadb.paystackTransaction.findMany({
+        const [pendingTx] = await prismadb_1.prismadb.paystackTransaction.findMany({
             where: {
                 userId,
                 courseId,
@@ -384,7 +392,7 @@ paymentApp.post("/initiate-payment", async (req, res) => {
             },
             callback_url: `${process.env.PAYSTACK_CALLBACK_URL}`,
         });
-        const transaction = await index_1.prismadb.$transaction(async (tx) => {
+        const transaction = await prismadb_1.prismadb.$transaction(async (tx) => {
             if (!existingPayment) {
                 await createPaymentStatus(tx, {
                     userId,
@@ -588,7 +596,7 @@ paymentApp.get("/verify", async (req, res) => {
         return res.status(400).json({ error: "Missing reference parameter" });
     }
     try {
-        const existingTx = await index_1.prismadb.paystackTransaction.findUnique({
+        const existingTx = await prismadb_1.prismadb.paystackTransaction.findUnique({
             where: { transactionRef: reference },
             include: {
                 paymentStatus: {
@@ -616,7 +624,7 @@ paymentApp.get("/verify", async (req, res) => {
         }
         const verification = await paystack.transaction.verify(reference);
         if (verification.data.status !== "success") {
-            await index_1.prismadb.paystackTransaction.update({
+            await prismadb_1.prismadb.paystackTransaction.update({
                 where: { transactionRef: reference },
                 data: {
                     status: "failed",
@@ -628,7 +636,7 @@ paymentApp.get("/verify", async (req, res) => {
                 error: "Payment not successful",
             });
         }
-        const result = await index_1.prismadb.$transaction(async (tx) => {
+        const result = await prismadb_1.prismadb.$transaction(async (tx) => {
             const updatedTx = await tx.paystackTransaction.update({
                 where: { transactionRef: reference },
                 data: {
@@ -1029,7 +1037,7 @@ paymentApp.get("/purchase-status", async (req, res) => {
         return res.status(400).json({ error: "Missing userId or courseId" });
     }
     try {
-        const purchase = await index_1.prismadb.purchase.findFirst({
+        const purchase = await prismadb_1.prismadb.purchase.findFirst({
             where: {
                 userId: userId,
                 courseId: courseId,
@@ -1045,7 +1053,7 @@ paymentApp.get("/purchase-status", async (req, res) => {
 //#region Cron Jobs
 node_cron_1.default.schedule("0 * * * *", async () => {
     const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000);
-    await index_1.prismadb.paystackTransaction.updateMany({
+    await prismadb_1.prismadb.paystackTransaction.updateMany({
         where: {
             status: "pending",
             createdAt: { lt: thirtyMinutesAgo },
@@ -1058,7 +1066,7 @@ node_cron_1.default.schedule("0 * * * *", async () => {
 node_cron_1.default.schedule("0 9 * * *", async () => {
     const today = new Date();
     // Find installments due in the next 3 days
-    const dueInstallments = await index_1.prismadb.paymentInstallment.findMany({
+    const dueInstallments = await prismadb_1.prismadb.paymentInstallment.findMany({
         where: {
             dueDate: {
                 lte: new Date(today.getTime() + 3 * 86400000),
@@ -1099,7 +1107,7 @@ node_cron_1.default.schedule("0 9 * * *", async () => {
             })
                 .then((res) => res.data.authorization_url);
             await (0, mail_1.sendPaymentReminder)(installment.paymentStatus.user.email, installment.paymentStatus.user.name || "Student", installment.paymentStatus.course.title, installment.installmentNumber, installment.dueDate, installment.amount, paymentLink, daysUntilDue);
-            await index_1.prismadb.paymentInstallment.update({
+            await prismadb_1.prismadb.paymentInstallment.update({
                 where: { id: installment.id },
                 data: { lastReminderSent: new Date() },
             });
@@ -1113,7 +1121,7 @@ node_cron_1.default.schedule("0 9 * * *", async () => {
 node_cron_1.default.schedule("0 0 * * *", async () => {
     console.log("Running overdue payment check...");
     try {
-        const overduePayments = await index_1.prismadb.paymentInstallment.findMany({
+        const overduePayments = await prismadb_1.prismadb.paymentInstallment.findMany({
             where: {
                 dueDate: { lt: new Date() },
                 paid: false,
@@ -1299,12 +1307,12 @@ node_cron_1.default.schedule("0 0 * * *", async () => {
                 if (shouldDeactivate) {
                     console.log(`🚫 DEACTIVATING user ${paymentStatus.user.email} - Reason: ${reason}`);
                     let nextCohort = null;
-                    await index_1.prismadb.$transaction([
-                        index_1.prismadb.user.update({
+                    await prismadb_1.prismadb.$transaction([
+                        prismadb_1.prismadb.user.update({
                             where: { id: paymentStatus.userId },
                             data: { inactive: true },
                         }),
-                        index_1.prismadb.paymentStatus.update({
+                        prismadb_1.prismadb.paymentStatus.update({
                             where: { id: paymentStatus.id },
                             data: { status: client_1.PaymentStatusType.EXPIRED },
                         }),
@@ -1315,7 +1323,7 @@ node_cron_1.default.schedule("0 0 * * *", async () => {
                             .filter((c) => c.startDate > paymentStatus.cohort.startDate)
                             .sort((a, b) => a.startDate.getTime() - b.startDate.getTime())[0];
                         if (nextCohort) {
-                            await index_1.prismadb.userCohort.updateMany({
+                            await prismadb_1.prismadb.userCohort.updateMany({
                                 where: {
                                     userId: paymentStatus.userId,
                                     courseId: paymentStatus.courseId,
@@ -1355,7 +1363,7 @@ node_cron_1.default.schedule("0 3 * * 1", async () => {
     console.log("🔍 Running weekly payment status audit...");
     try {
         // Find recently deactivated users who might have been incorrectly processed
-        const recentlyDeactivated = await index_1.prismadb.user.findMany({
+        const recentlyDeactivated = await prismadb_1.prismadb.user.findMany({
             where: {
                 inactive: true,
                 updatedAt: {
@@ -1471,7 +1479,7 @@ paymentApp.get("/admin/payments", async (req, res) => {
                 },
             ];
         }
-        const payments = await index_1.prismadb.paymentStatus.findMany({
+        const payments = await prismadb_1.prismadb.paymentStatus.findMany({
             where,
             include: {
                 user: {
@@ -1508,8 +1516,8 @@ paymentApp.get("/admin/payments", async (req, res) => {
                 [sortBy]: sortOrder,
             },
         });
-        const total = await index_1.prismadb.paymentStatus.count({ where });
-        const metricsRaw = await index_1.prismadb.$queryRaw `
+        const total = await prismadb_1.prismadb.paymentStatus.count({ where });
+        const metricsRaw = await prismadb_1.prismadb.$queryRaw `
       SELECT 
         COUNT(*) as "totalPayments",
         SUM(CASE WHEN status = 'COMPLETE' THEN 1 ELSE 0 END) as "completedPayments",
@@ -1540,7 +1548,7 @@ paymentApp.get("/admin/payments", async (req, res) => {
 });
 paymentApp.get("/admin/payments/stats", async (req, res) => {
     try {
-        const totalRevenueRaw = await index_1.prismadb.$queryRaw `
+        const totalRevenueRaw = await prismadb_1.prismadb.$queryRaw `
       SELECT 
         SUM(CASE 
           WHEN "paymentPlan" = 'FULL_PAYMENT' THEN ${TOTAL_COURSE_FEE}
@@ -1556,7 +1564,7 @@ paymentApp.get("/admin/payments/stats", async (req, res) => {
       FROM "PaymentStatus"
       WHERE status != 'EXPIRED'
     `;
-        const revenueByTypeRaw = await index_1.prismadb.$queryRaw `
+        const revenueByTypeRaw = await prismadb_1.prismadb.$queryRaw `
       SELECT 
         "paymentPlan",
         SUM(CASE 
@@ -1575,7 +1583,7 @@ paymentApp.get("/admin/payments/stats", async (req, res) => {
       WHERE status != 'EXPIRED'
       GROUP BY "paymentPlan"
     `;
-        const revenueByCourseRaw = await index_1.prismadb.$queryRaw `
+        const revenueByCourseRaw = await prismadb_1.prismadb.$queryRaw `
       SELECT 
         c.id,
         c.title,

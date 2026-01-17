@@ -13,12 +13,12 @@ const compression_1 = __importDefault(require("compression"));
 const cors_1 = __importDefault(require("cors"));
 const dotenv_1 = __importDefault(require("dotenv"));
 const node_cron_1 = __importDefault(require("node-cron"));
-const client_1 = require("@prisma/client");
+const prismadb_1 = require("./lib/prismadb");
+Object.defineProperty(exports, "prismadb", { enumerable: true, get: function () { return prismadb_1.prismadb; } });
 const route_1 = __importDefault(require("./route"));
 const paystack_1 = __importDefault(require("./controllers/paystack"));
 const sales_dashboard_1 = __importDefault(require("./controllers/sales-dashboard"));
 const path_1 = __importDefault(require("path"));
-exports.prismadb = new client_1.PrismaClient();
 const app = (0, express_1.default)();
 dotenv_1.default.config();
 // CORS Configuration
