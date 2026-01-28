@@ -52,11 +52,7 @@ const getCourses = async (req, res) => {
                         },
                     },
                 },
-                cohorts: {
-                    select: {
-                        id: true,
-                    },
-                },
+                cohorts: true, // Modified from select: { id: true } to true
                 timetable: true,
             },
             orderBy: {
@@ -152,6 +148,7 @@ const getCourse = async (req, res) => {
                     },
                 },
                 timetable: true,
+                cohorts: true,
             },
         });
         if (!course) {
@@ -306,6 +303,7 @@ const getCourseWithoutAuth = async (req, res) => {
                     },
                 },
                 timetable: true,
+                cohorts: true,
             },
         });
         if (!course) {
@@ -376,6 +374,7 @@ const getCourseWithoutAuthWithSlug = async (req, res) => {
                     },
                 },
                 timetable: true,
+                cohorts: true,
             },
         });
         if (!course) {

@@ -531,36 +531,8 @@ paymentApp.post("/initiate-payment", async (req: Request, res: Response) => {
 });
 
 function getPaymentData(planType: string, cohortName: string) {
-  // Get cohort start date from the cohort name (extract month and year)
-  const cohortMatch = cohortName.match(/(\w+)\s+(\d{4})\s+Cohort/);
-  if (!cohortMatch) {
-    throw new Error("Invalid cohort name format");
-  }
-
-  const monthName = cohortMatch[1];
-  const year = parseInt(cohortMatch[2]);
-
-  const monthMap: { [key: string]: number } = {
-    January: 0,
-    February: 1,
-    March: 2,
-    April: 3,
-    May: 4,
-    June: 5,
-    July: 6,
-    August: 7,
-    September: 8,
-    October: 9,
-    November: 10,
-    December: 11,
-  };
-
-  const month = monthMap[monthName];
-  if (month === undefined) {
-    throw new Error("Invalid month name in cohort");
-  }
-
-  const startDate = new Date(year, month, 6); // 6th of the month as per your system
+  // Use current date as baseline since actual schedule is calculated from DB cohort record
+  const startDate = new Date();
 
   switch (planType) {
     case "FULL":

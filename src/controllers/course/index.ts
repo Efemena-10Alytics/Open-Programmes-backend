@@ -54,11 +54,7 @@ export const getCourses = async (req: Request, res: Response) => {
             },
           },
         },
-        cohorts: {
-          select: {
-            id: true,
-          },
-        },
+        cohorts: true, // Modified from select: { id: true } to true
         timetable: true,
       },
       orderBy: {
@@ -167,6 +163,7 @@ export const getCourse = async (req: Request, res: Response) => {
           },
         },
         timetable: true,
+        cohorts: true,
       },
     });
 
@@ -176,11 +173,10 @@ export const getCourse = async (req: Request, res: Response) => {
 
     return res.status(200).json({
       status: "success",
-      message: `${
-        user?.role === "USER" &&
+      message: `${user?.role === "USER" &&
         !coursePurchased &&
         "Course purchase not found, weekly attachments and video url is disabled"
-      }`,
+        }`,
       data: course,
     });
   } catch (error) {
@@ -337,6 +333,7 @@ export const getCourseWithoutAuth = async (req: Request, res: Response) => {
           },
         },
         timetable: true,
+        cohorts: true,
       },
     });
 
@@ -413,6 +410,7 @@ export const getCourseWithoutAuthWithSlug = async (
           },
         },
         timetable: true,
+        cohorts: true,
       },
     });
 
