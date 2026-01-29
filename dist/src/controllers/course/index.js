@@ -237,6 +237,41 @@ const deleteCourse = async (req, res) => {
         if (!existingCourse) {
             return res.status(404).json({ message: "Course does not exist" });
         }
+        // Delete related records manually to avoid foreign key constraints if cascade delete is not set up perfectly in DB
+        // 1. Delete Purchase
+        await index_1.prismadb.purchase.deleteMany({
+            where: {
+                courseId: courseId
+            }
+        });
+        // 2. Delete Cohorts
+        await index_1.prismadb.cohort.deleteMany({
+            where: {
+                courseId: courseId
+            }
+        });
+        // 3. Delete TimeTables
+        await index_1.prismadb.timeTable.deleteMany({
+            where: {
+                courseId: courseId
+            }
+        });
+        // 4. Delete CourseWeeks
+        await index_1.prismadb.courseWeek.deleteMany({
+            where: {
+                courseId: courseId
+            }
+        });
+        // 5. Delete Other Related Models...
+        await index_1.prismadb.skillsYouWillLearn.deleteMany({ where: { courseId } });
+        await index_1.prismadb.learningOutcome.deleteMany({ where: { courseId } });
+        await index_1.prismadb.prerequisite.deleteMany({ where: { courseId } });
+        await index_1.prismadb.tag.deleteMany({ where: { courseId } });
+        await index_1.prismadb.catalogHeaderTags.deleteMany({ where: { courseId } });
+        await index_1.prismadb.projectVideo.deleteMany({ where: { courseId } });
+        await index_1.prismadb.userProgress.deleteMany({ where: { courseId } });
+        await index_1.prismadb.paymentStatus.deleteMany({ where: { courseId } });
+        await index_1.prismadb.paystackTransaction.deleteMany({ where: { courseId } });
         await index_1.prismadb.course.delete({
             where: {
                 id: courseId,
