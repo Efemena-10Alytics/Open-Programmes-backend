@@ -535,6 +535,7 @@ model ProjectVideo {
   videoUrl     String?
   thumbnailUrl String?
   duration     String?
+  videoType    String? @default("VIMEO") // VIMEO, YOUTUBE, UPLOAD
 
   moduleId     String
   courseModule Module @relation(fields: [moduleId], references: [id], onDelete: Cascade)

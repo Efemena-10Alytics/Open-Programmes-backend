@@ -109,11 +109,13 @@ export const createCourseVideo = async (req: Request, res: Response) => {
       videoUrl,
       thumbnailUrl,
       duration,
+      videoType,
     }: {
       title: string;
       videoUrl: string;
       thumbnailUrl: string;
       duration: string;
+      videoType?: string;
     } = req.body;
 
     const { courseId, weekId, moduleId } = req.params;
@@ -157,12 +159,14 @@ export const createCourseVideo = async (req: Request, res: Response) => {
         videoUrl,
         thumbnailUrl,
         duration,
+        videoType: videoType || "VIMEO",
         moduleId,
         courseId,
       },
       select: {
         id: true,
         title: true,
+        videoType: true,
       },
     });
 
@@ -334,7 +338,7 @@ export const getCourseVideosByCourseId = async (req: Request, res: Response) => 
 
     const courseVideosId = await prismadb.projectVideo.findMany({
       where: {
-        courseId,        
+        courseId,
       },
       orderBy: {
         createdAt: "asc"

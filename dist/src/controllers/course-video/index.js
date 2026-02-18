@@ -90,7 +90,7 @@ const getCourseVideo = async (req, res) => {
 exports.getCourseVideo = getCourseVideo;
 const createCourseVideo = async (req, res) => {
     try {
-        const { title, videoUrl, thumbnailUrl, duration, } = req.body;
+        const { title, videoUrl, thumbnailUrl, duration, videoType, } = req.body;
         const { courseId, weekId, moduleId } = req.params;
         if (!courseId) {
             return res.status(400).json({ message: "CourseId is required" });
@@ -124,12 +124,14 @@ const createCourseVideo = async (req, res) => {
                 videoUrl,
                 thumbnailUrl,
                 duration,
+                videoType: videoType || "VIMEO",
                 moduleId,
                 courseId,
             },
             select: {
                 id: true,
                 title: true,
+                videoType: true,
             },
         });
         return res.status(201).json({
