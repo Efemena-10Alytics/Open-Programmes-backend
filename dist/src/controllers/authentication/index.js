@@ -208,25 +208,31 @@ async function register(req, res) {
         if (!isEmailValid) {
             return res.status(400).json({ message: "Invalid email address!" });
         }
-        const isPhoneNumberValid = await index_1.prismadb.user.findUnique({
-            where: {
-                phone_number: phone_number,
-            },
-        });
-        if (isPhoneNumberValid) {
-            return res.status(403).json({ message: "Phone number already used" });
-        }
         const isPasswordValid = (0, validate_password_1.validatePassword)(password, res);
         if (!isPasswordValid) {
-            return res.status(400).json("Invalid Password");
+            return;
         }
-        const existingUser = await index_1.prismadb.user.findUnique({
+        const existingUsers = await index_1.prismadb.user.findMany({
             where: {
-                email,
+                OR: [{ email }, { phone_number }],
             },
         });
-        if (existingUser) {
-            return res.status(403).json({ message: "User already exists" });
+        if (existingUsers.length > 0) {
+            const isEmailTaken = existingUsers.some((user) => user.email === email);
+            const isPhoneTaken = existingUsers.some((user) => user.phone_number === phone_number);
+            if (isEmailTaken && isPhoneTaken) {
+                return res
+                    .status(403)
+                    .json({ message: "Email and Phone number already used" });
+            }
+            if (isEmailTaken) {
+                return res
+                    .status(403)
+                    .json({ message: "User with this email already exists" });
+            }
+            if (isPhoneTaken) {
+                return res.status(403).json({ message: "Phone number already used" });
+            }
         }
         const salt = await bcryptjs_1.default.genSalt(10);
         const hashedPassword = await bcryptjs_1.default.hash(password, salt);
