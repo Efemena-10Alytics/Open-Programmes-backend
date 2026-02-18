@@ -78,6 +78,8 @@ async function getCourseDetails(courseId: string) {
     select: {
       id: true,
       title: true,
+      price: true,
+      discount: true,
       cohorts: {
         orderBy: { startDate: "asc" },
         select: {
@@ -89,6 +91,13 @@ async function getCourseDetails(courseId: string) {
       },
     },
   });
+}
+
+/** Parse a price string like "250000" or "250,000" to a number, falling back to TOTAL_COURSE_FEE */
+function parseCoursePrice(raw: string | null | undefined): number {
+  if (!raw) return TOTAL_COURSE_FEE;
+  const parsed = Number(String(raw).replace(/,/g, "").trim());
+  return parsed > 0 ? parsed : TOTAL_COURSE_FEE;
 }
 
 async function getUserDetails(userId: string) {
@@ -273,25 +282,35 @@ paymentApp.get("/payment-status", async (req: Request, res: Response) => {
   }
 
   try {
-    const paymentStatus = await prismadb.paymentStatus.findUnique({
-      where: {
-        userId_courseId: {
-          userId: userId as string,
-          courseId: courseId as string,
-        },
-      },
-      include: {
-        paymentInstallments: {
-          orderBy: {
-            installmentNumber: "asc",
+    const [paymentStatus, course] = await Promise.all([
+      prismadb.paymentStatus.findUnique({
+        where: {
+          userId_courseId: {
+            userId: userId as string,
+            courseId: courseId as string,
           },
         },
-      },
-    });
+        include: {
+          paymentInstallments: {
+            orderBy: {
+              installmentNumber: "asc",
+            },
+          },
+        },
+      }),
+      prismadb.course.findUnique({
+        where: { id: courseId as string },
+        select: { price: true },
+      }),
+    ]);
 
     if (!paymentStatus) {
       return res.json(null);
     }
+
+    // Use admin-set course price, falling back to env variable
+    const courseFee = parseCoursePrice(course?.price);
+    const halfFee = Math.ceil(courseFee / 2);
 
     let remainingAmount = 0;
     const paymentPlan = await getPaymentPlanFromRecord(paymentStatus);
@@ -300,13 +319,13 @@ paymentApp.get("/payment-status", async (req: Request, res: Response) => {
       paymentPlan === PAYMENT_PLANS.FIRST_HALF_COMPLETE &&
       paymentStatus.status === PaymentStatusType.BALANCE_HALF_PAYMENT
     ) {
-      remainingAmount = TOTAL_COURSE_FEE / 2;
+      remainingAmount = halfFee;
     } else if (paymentPlan === PAYMENT_PLANS.FOUR_INSTALLMENTS) {
       const paidInstallments = paymentStatus.paymentInstallments.filter(
         (i) => i.paid
       );
       const totalPaid = paidInstallments.reduce((sum, i) => sum + i.amount, 0);
-      remainingAmount = TOTAL_COURSE_FEE - totalPaid;
+      remainingAmount = courseFee - totalPaid;
     }
 
     res.json({
@@ -321,6 +340,7 @@ paymentApp.get("/payment-status", async (req: Request, res: Response) => {
     });
   }
 });
+
 
 //#region Link Generation
 paymentApp.get("/payment-link", async (req: Request, res: Response) => {
@@ -445,6 +465,9 @@ paymentApp.post("/initiate-payment", async (req: Request, res: Response) => {
       getCourseDetails(courseId),
     ]);
 
+    // Resolve course fee from admin-set price, falling back to env variable
+    const courseFee = parseCoursePrice(course.price);
+
     const existingPayment = await prismadb.paymentStatus.findUnique({
       where: { userId_courseId: { userId, courseId } },
       include: { paymentInstallments: true },
@@ -468,7 +491,7 @@ paymentApp.post("/initiate-payment", async (req: Request, res: Response) => {
       });
     }
 
-    const paymentData = getPaymentData(planType, cohortName);
+    const paymentData = getPaymentData(planType, cohortName, courseFee);
     if (!paymentData) {
       return res.status(400).json({ error: "Invalid plan type" });
     }
@@ -494,6 +517,7 @@ paymentApp.post("/initiate-payment", async (req: Request, res: Response) => {
             paymentData,
             planType,
             cohortName,
+            courseFee,
           });
         }
 
@@ -530,14 +554,21 @@ paymentApp.post("/initiate-payment", async (req: Request, res: Response) => {
   }
 });
 
-function getPaymentData(planType: string, cohortName: string) {
+/**
+ * Build payment data for a given plan type.
+ * @param planType  - "FULL" | "HALF" | "THREE_INSTALLMENT"
+ * @param cohortName - cohort the user selected
+ * @param courseFee  - the actual course fee fetched from the DB (admin-set price)
+ */
+function getPaymentData(planType: string, cohortName: string, courseFee: number = TOTAL_COURSE_FEE) {
   // Use current date as baseline since actual schedule is calculated from DB cohort record
   const startDate = new Date();
+  const halfFee = Math.ceil(courseFee / 2);
 
   switch (planType) {
     case "FULL":
       return {
-        amount: TOTAL_COURSE_FEE,
+        amount: courseFee,
         metadata: { planType: "FULL", cohortName },
         callbackParams: {
           paymentPlan: PAYMENT_PLANS.FULL_PAYMENT,
@@ -546,11 +577,11 @@ function getPaymentData(planType: string, cohortName: string) {
       };
     case "HALF":
       return {
-        amount: TOTAL_COURSE_FEE / 2,
+        amount: halfFee,
         metadata: { planType: "HALF", cohortName },
         callbackParams: {
           paymentPlan: PAYMENT_PLANS.FIRST_HALF_COMPLETE,
-          remainingAmount: TOTAL_COURSE_FEE / 2,
+          remainingAmount: halfFee,
           cohortName,
         },
       };
@@ -568,20 +599,6 @@ function getPaymentData(planType: string, cohortName: string) {
           cohortName,
         },
       };
-    case "INSTALLMENT":
-      return {
-        amount: INSTALLMENT_CONFIG.seatReservation,
-        metadata: {
-          planType: "INSTALLMENT",
-          schedule: getCohortSchedule(startDate),
-          cohortName,
-        },
-        callbackParams: {
-          paymentPlan: PAYMENT_PLANS.FOUR_INSTALLMENTS,
-          installmentNumber: 1,
-          cohortName,
-        },
-      };
     default:
       return null;
   }
@@ -595,6 +612,7 @@ async function createPaymentStatus(
     paymentData: any;
     planType: string;
     cohortName: string;
+    courseFee?: number;
   }
 ) {
   const cohort = await assignToSelectedCohort(
@@ -614,57 +632,30 @@ async function createPaymentStatus(
     cohortId: cohort.cohortId,
   };
 
-  if (
-    params.planType === "INSTALLMENT" ||
-    params.planType === "THREE_INSTALLMENT"
-  ) {
+  if (params.planType === "THREE_INSTALLMENT") {
     createData.desiredStartDate = cohort.actualStartDate;
 
     // Use the actual cohort start date for installment scheduling
     const actualStartDate = cohort.actualStartDate;
 
     createData.paymentInstallments = {
-      create:
-        params.planType === "INSTALLMENT"
-          ? [
-            {
-              amount: INSTALLMENT_CONFIG.seatReservation,
-              dueDate: actualStartDate, // Due at cohort start
-              installmentNumber: 1,
-            },
-            {
-              amount: INSTALLMENT_CONFIG.cohortAccess,
-              dueDate: addMonths(actualStartDate, 0), // Same month as start
-              installmentNumber: 2,
-            },
-            {
-              amount: INSTALLMENT_CONFIG.month1,
-              dueDate: addMonths(actualStartDate, 1), // 1 month after start
-              installmentNumber: 3,
-            },
-            {
-              amount: INSTALLMENT_CONFIG.month2,
-              dueDate: addMonths(actualStartDate, 2), // 2 months after start
-              installmentNumber: 4,
-            },
-          ]
-          : [
-            {
-              amount: THREE_INSTALLMENT_CONFIG.initialPayment,
-              dueDate: actualStartDate, // Due at cohort start
-              installmentNumber: 1,
-            },
-            {
-              amount: THREE_INSTALLMENT_CONFIG.month1,
-              dueDate: addMonths(actualStartDate, 1), // 1 month after start
-              installmentNumber: 2,
-            },
-            {
-              amount: THREE_INSTALLMENT_CONFIG.month2,
-              dueDate: addMonths(actualStartDate, 2),
-              installmentNumber: 3,
-            },
-          ],
+      create: [
+        {
+          amount: THREE_INSTALLMENT_CONFIG.initialPayment,
+          dueDate: actualStartDate,
+          installmentNumber: 1,
+        },
+        {
+          amount: THREE_INSTALLMENT_CONFIG.month1,
+          dueDate: addMonths(actualStartDate, 1),
+          installmentNumber: 2,
+        },
+        {
+          amount: THREE_INSTALLMENT_CONFIG.month2,
+          dueDate: addMonths(actualStartDate, 2),
+          installmentNumber: 3,
+        },
+      ],
     };
   }
 
