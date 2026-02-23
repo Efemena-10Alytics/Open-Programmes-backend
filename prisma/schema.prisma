@@ -94,7 +94,7 @@ model PasswordResetToken {
 model PaymentInstallment {
   id                String        @id @default(cuid())
   paymentStatusId   String
-  paymentStatus     PaymentStatus @relation(fields: [paymentStatusId], references: [id])
+  paymentStatus     PaymentStatus @relation(fields: [paymentStatusId], references: [id], onDelete: Cascade)
   amount            Float
   dueDate           DateTime
   paid              Boolean       @default(false)
@@ -110,9 +110,9 @@ model PaymentStatus {
   courseId             String
   paymentType          String?
   paymentPlan          String?
-  course               Course                @relation(fields: [courseId], references: [id])
+  course               Course                @relation(fields: [courseId], references: [id], onDelete: Cascade)
   cohortId             String?
-  cohort               Cohort?               @relation(fields: [cohortId], references: [id])
+  cohort               Cohort?               @relation(fields: [cohortId], references: [id], onDelete: Cascade)
   userId               String
   user                 User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
   createdAt            DateTime              @default(now())
@@ -180,15 +180,15 @@ model ChangeRequest {
   
   // For course change
   currentCourseId   String?
-  currentCourse     Course?       @relation(fields: [currentCourseId], references: [id], name: "CurrentCourse")
+  currentCourse     Course?       @relation(fields: [currentCourseId], references: [id], name: "CurrentCourse", onDelete: SetNull)
   desiredCourseId   String?
-  desiredCourse     Course?       @relation(fields: [desiredCourseId], references: [id], name: "DesiredCourse")
+  desiredCourse     Course?       @relation(fields: [desiredCourseId], references: [id], name: "DesiredCourse", onDelete: SetNull)
   
   // For deferment
   currentCohortId   String?
-  currentCohort     Cohort?       @relation(fields: [currentCohortId], references: [id], name: "CurrentCohort")
+  currentCohort     Cohort?       @relation(fields: [currentCohortId], references: [id], name: "CurrentCohort", onDelete: SetNull)
   desiredCohortId   String?
-  desiredCohort     Cohort?       @relation(fields: [desiredCohortId], references: [id], name: "DesiredCohort")
+  desiredCohort     Cohort?       @relation(fields: [desiredCohortId], references: [id], name: "DesiredCohort", onDelete: SetNull)
   
   reason            String
   status            RequestStatus @default(PENDING)
@@ -241,7 +241,7 @@ model Cohort {
   endDate   DateTime?
 
   courseId String
-  course   Course @relation(fields: [courseId], references: [id])
+  course   Course @relation(fields: [courseId], references: [id], onDelete: Cascade)
 
   users           UserCohort[] // return userId, user and cohortId
   cohortCourses   CohortCourse[]
@@ -379,7 +379,7 @@ model CohortAttachment {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  CohortCourse   CohortCourse? @relation(fields: [cohortCourseId], references: [id])
+  CohortCourse   CohortCourse? @relation(fields: [cohortCourseId], references: [id], onDelete: Cascade)
   cohortCourseId String?
 }
 
@@ -392,7 +392,7 @@ model CohortQuiz {
   cohortCourseModule   CohortCourseModule @relation(fields: [cohortCourseModuleId], references: [id], onDelete: Cascade)
 
   cohortCourseId String?
-  cohortCourse   CohortCourse? @relation(fields: [cohortCourseId], references: [id])
+  cohortCourse   CohortCourse? @relation(fields: [cohortCourseId], references: [id], onDelete: Cascade)
 
   cohortQuizAnswers CohortQuizAnswer[]
 
@@ -517,7 +517,7 @@ model Module {
   description String? @db.Text
   iconUrl     String?
 
-  CourseWeek   CourseWeek @relation(fields: [courseWeekId], references: [id])
+  CourseWeek   CourseWeek @relation(fields: [courseWeekId], references: [id], onDelete: Cascade)
   courseWeekId String
 
   projectVideos ProjectVideo[]
@@ -824,10 +824,10 @@ model Assignment {
   assignmentQuizSubmissions AssignmentQuizSubmission[]  // ADD THIS LINE
   
   cohortCourseId String
-  cohortCourse   CohortCourse @relation(fields: [cohortCourseId], references: [id])
+  cohortCourse   CohortCourse @relation(fields: [cohortCourseId], references: [id], onDelete: Cascade)
   
   cohortCourseModuleId String?
-  cohortCourseModule   CohortCourseModule? @relation(fields: [cohortCourseModuleId], references: [id])
+  cohortCourseModule   CohortCourseModule? @relation(fields: [cohortCourseModuleId], references: [id], onDelete: Cascade)
   
   attachments AssignmentAttachment[]
   submissions AssignmentSubmission[]
@@ -873,7 +873,7 @@ model AssignmentQuizOption {
 model AssignmentQuizSubmission {
   id              String   @id @default(cuid())
   assignmentId    String
-  assignment      Assignment @relation(fields: [assignmentId], references: [id])
+  assignment      Assignment @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
   
   studentId       String
   student         User     @relation(fields: [studentId], references: [id])
@@ -895,10 +895,10 @@ model AssignmentQuizAnswer {
   assignmentQuizSubmission   AssignmentQuizSubmission @relation(fields: [assignmentQuizSubmissionId], references: [id], onDelete: Cascade)
   
   assignmentQuizQuestionId       String
-  assignmentQuizQuestion         AssignmentQuizQuestion @relation(fields: [assignmentQuizQuestionId], references: [id])
+  assignmentQuizQuestion         AssignmentQuizQuestion @relation(fields: [assignmentQuizQuestionId], references: [id], onDelete: Cascade)
   
   selectedAssignmentQuizOptionId String
-  selectedAssignmentQuizOption   AssignmentQuizOption @relation(fields: [selectedAssignmentQuizOptionId], references: [id])
+  selectedAssignmentQuizOption   AssignmentQuizOption @relation(fields: [selectedAssignmentQuizOptionId], references: [id], onDelete: Cascade)
   
   isCorrect        Boolean
   pointsEarned     Int
@@ -913,7 +913,7 @@ model AssignmentAttachment {
   name         String
   url          String
   assignmentId String
-  assignment   Assignment @relation(fields: [assignmentId], references: [id])
+  assignment   Assignment @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
   
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -934,7 +934,7 @@ model AssignmentSubmission {
   
   // Relations
   assignmentId String
-  assignment   Assignment @relation(fields: [assignmentId], references: [id])
+  assignment   Assignment @relation(fields: [assignmentId], references: [id], onDelete: Cascade)
   studentId    String
   student      User       @relation(fields: [studentId], references: [id])
   
@@ -954,7 +954,7 @@ model Announcement {
   isPinned       Boolean  @default(false)
   
   cohortCourseId String
-  cohortCourse   CohortCourse @relation(fields: [cohortCourseId], references: [id])
+  cohortCourse   CohortCourse @relation(fields: [cohortCourseId], references: [id], onDelete: Cascade)
   
   authorId       String
   author         User     @relation(fields: [authorId], references: [id])
@@ -973,13 +973,13 @@ model Comment {
   
   // Can comment on announcements, assignment submissions, or stream posts
   announcementId String?
-  announcement   Announcement? @relation(fields: [announcementId], references: [id])
+  announcement   Announcement? @relation(fields: [announcementId], references: [id], onDelete: Cascade)
   
   submissionId   String?
-  submission     AssignmentSubmission? @relation(fields: [submissionId], references: [id])
+  submission     AssignmentSubmission? @relation(fields: [submissionId], references: [id], onDelete: Cascade)
   
   streamPostId   String?
-  streamPost     StreamPost? @relation(fields: [streamPostId], references: [id])
+  streamPost     StreamPost? @relation(fields: [streamPostId], references: [id], onDelete: Cascade)
   
   // For nested comments/replies
   parentId       String?
@@ -998,7 +998,7 @@ model ClassroomTopic {
   order           Int      @default(0)
   
   cohortCourseId  String
-  cohortCourse    CohortCourse @relation(fields: [cohortCourseId], references: [id])
+  cohortCourse    CohortCourse @relation(fields: [cohortCourseId], references: [id], onDelete: Cascade)
   
   // Subs: assignments, materials, recordings with CASCADE delete
   assignments     Assignment[]
@@ -1020,7 +1020,7 @@ model ClassMaterial {
   fileType    String   @default("pdf")
   
   cohortCourseId String
-  cohortCourse   CohortCourse @relation(fields: [cohortCourseId], references: [id])
+  cohortCourse   CohortCourse @relation(fields: [cohortCourseId], references: [id], onDelete: Cascade)
   
   classroomTopicId String?
   classroomTopic   ClassroomTopic? @relation(fields: [classroomTopicId], references: [id], onDelete: Cascade)
@@ -1036,7 +1036,7 @@ model ClassRecording {
   recordingUrl String
   
   cohortCourseId String
-  cohortCourse   CohortCourse @relation(fields: [cohortCourseId], references: [id])
+  cohortCourse   CohortCourse @relation(fields: [cohortCourseId], references: [id], onDelete: Cascade)
 
   classroomTopicId String?
   classroomTopic   ClassroomTopic? @relation(fields: [classroomTopicId], references: [id], onDelete: Cascade)
@@ -1054,7 +1054,7 @@ model StreamPost {
   author          User     @relation(fields: [authorId], references: [id])
   
   cohortCourseId  String
-  cohortCourse    CohortCourse @relation(fields: [cohortCourseId], references: [id])
+  cohortCourse    CohortCourse @relation(fields: [cohortCourseId], references: [id], onDelete: Cascade)
   
   comments        Comment[]
   

@@ -265,36 +265,90 @@ export const deleteCourse = async (req: Request, res: Response) => {
       return res.status(404).json({ message: "Course does not exist" });
     }
 
-    // Delete related records manually to avoid foreign key constraints if cascade delete is not set up perfectly in DB
-    // 1. Delete Purchase
-    await prismadb.purchase.deleteMany({
+    // 1. Fetch related IDs for deep cleanup
+    const cohortCourses = await prismadb.cohortCourse.findMany({
+      where: { courseId },
+      select: { id: true }
+    });
+    const cohortCourseIds = cohortCourses.map(cc => cc.id);
+
+    const courseWeeks = await prismadb.courseWeek.findMany({
+      where: { courseId },
+      select: { id: true }
+    });
+    const courseWeekIds = courseWeeks.map(cw => cw.id);
+
+    // 2. Delete deep children (Leaf Nodes) first
+
+    // Cleanup for CohortCourse descendants
+    if (cohortCourseIds.length > 0) {
+      // Delete Comments linked to announcements/submissions/posts in these cohort courses
+      await prismadb.comment.deleteMany({
+        where: {
+          OR: [
+            { announcement: { cohortCourseId: { in: cohortCourseIds } } },
+            { submission: { assignment: { cohortCourseId: { in: cohortCourseIds } } } },
+            { streamPost: { cohortCourseId: { in: cohortCourseIds } } }
+          ]
+        }
+      });
+
+      // Delete Assignment Submissions
+      await prismadb.assignmentSubmission.deleteMany({
+        where: { assignment: { cohortCourseId: { in: cohortCourseIds } } }
+      });
+      // Delete Assignment Quiz Submissions if the model exists in the Prisma client
+      if ((prismadb as any).assignmentQuizSubmission) {
+        await (prismadb as any).assignmentQuizSubmission.deleteMany({
+          where: { assignment: { cohortCourseId: { in: cohortCourseIds } } }
+        });
+      }
+
+      // Delete Assignments
+      await prismadb.assignment.deleteMany({
+        where: { cohortCourseId: { in: cohortCourseIds } }
+      });
+
+      // Delete Classroom Topics, Stream Posts, Announcements, Materials, Recordings
+      await prismadb.classroomTopic.deleteMany({ where: { cohortCourseId: { in: cohortCourseIds } } });
+      await prismadb.streamPost.deleteMany({ where: { cohortCourseId: { in: cohortCourseIds } } });
+      await prismadb.announcement.deleteMany({ where: { cohortCourseId: { in: cohortCourseIds } } });
+      await prismadb.classMaterial.deleteMany({ where: { cohortCourseId: { in: cohortCourseIds } } });
+      await prismadb.classRecording.deleteMany({ where: { cohortCourseId: { in: cohortCourseIds } } });
+      await prismadb.cohortAttachment.deleteMany({ where: { cohortCourseId: { in: cohortCourseIds } } });
+      await prismadb.cohortQuiz.deleteMany({ where: { cohortCourseId: { in: cohortCourseIds } } });
+    }
+
+    // Cleanup for CourseWeek descendants
+    if (courseWeekIds.length > 0) {
+      await prismadb.module.deleteMany({
+        where: { courseWeekId: { in: courseWeekIds } }
+      });
+    }
+
+    // Cleanup for PaymentStatus descendants
+    await prismadb.paymentInstallment.deleteMany({
+      where: { paymentStatus: { courseId: courseId } }
+    });
+
+    // 3. Delete intermediate models
+    await prismadb.purchase.deleteMany({ where: { courseId } });
+    await prismadb.cohortCourse.deleteMany({ where: { courseId } });
+    await prismadb.cohort.deleteMany({ where: { courseId } });
+    await prismadb.timeTable.deleteMany({ where: { courseId } });
+    await prismadb.courseWeek.deleteMany({ where: { courseId } });
+
+    // Cleanup ChangeRequests
+    await prismadb.changeRequest.deleteMany({
       where: {
-        courseId: courseId
+        OR: [
+          { currentCourseId: courseId },
+          { desiredCourseId: courseId }
+        ]
       }
     });
 
-    // 2. Delete Cohorts
-    await prismadb.cohort.deleteMany({
-      where: {
-        courseId: courseId
-      }
-    });
-
-    // 3. Delete TimeTables
-    await prismadb.timeTable.deleteMany({
-      where: {
-        courseId: courseId
-      }
-    });
-
-    // 4. Delete CourseWeeks
-    await prismadb.courseWeek.deleteMany({
-      where: {
-        courseId: courseId
-      }
-    });
-
-    // 5. Delete Other Related Models...
+    // 4. Delete Course-related simple models
     await prismadb.skillsYouWillLearn.deleteMany({ where: { courseId } });
     await prismadb.learningOutcome.deleteMany({ where: { courseId } });
     await prismadb.prerequisite.deleteMany({ where: { courseId } });
@@ -305,6 +359,7 @@ export const deleteCourse = async (req: Request, res: Response) => {
     await prismadb.paymentStatus.deleteMany({ where: { courseId } });
     await prismadb.paystackTransaction.deleteMany({ where: { courseId } });
 
+    // 5. Final delete of the Course
     await prismadb.course.delete({
       where: {
         id: courseId,
