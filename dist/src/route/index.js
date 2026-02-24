@@ -35,6 +35,7 @@ const program_leads_1 = __importDefault(require("./program-leads"));
 const changeRequest_1 = __importDefault(require("./changeRequest"));
 const classroom_1 = __importDefault(require("./classroom"));
 const assignment_1 = __importDefault(require("./assignment"));
+const scholarship_1 = __importDefault(require("./scholarship"));
 const router = express_1.default.Router();
 exports.default = () => {
     (0, authentication_1.default)(router);
@@ -68,6 +69,7 @@ exports.default = () => {
     (0, changeRequest_1.default)(router);
     (0, classroom_1.default)(router);
     (0, assignment_1.default)(router);
+    (0, scholarship_1.default)(router);
     return router;
 };
 //# sourceMappingURL=index.js.map

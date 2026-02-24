@@ -170,6 +170,8 @@ model User {
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  scholarshipApplications ScholarshipApplication[]
 }
 
 model ChangeRequest {
@@ -1062,4 +1064,21 @@ model StreamPost {
   updatedAt       DateTime @updatedAt
   
   @@map("stream_posts")
+}
+
+model ScholarshipApplication {
+  id           String   @id @default(cuid())
+  fullName     String
+  email        String
+  phone_number String
+  country      String
+  gender       String
+  program      String
+  cohort       String
+  discountCode String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  
+  userId       String?
+  user         User?    @relation(fields: [userId], references: [id])
 }
