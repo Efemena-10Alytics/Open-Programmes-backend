@@ -478,6 +478,8 @@ model Course {
   currentChangeRequests ChangeRequest[] @relation("CurrentCourse")
   desiredChangeRequests ChangeRequest[] @relation("DesiredCourse")
 
+  syllabus        String? @db.Text
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
