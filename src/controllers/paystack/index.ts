@@ -1811,6 +1811,7 @@ paymentApp.get("/admin/payments", async (req: Request, res: Response) => {
           select: {
             id: true,
             title: true,
+            price: true,
           },
         },
         cohort: {
@@ -1882,19 +1883,19 @@ paymentApp.get("/admin/payments/stats", async (req: Request, res: Response) => {
     >`
       SELECT 
         SUM(CASE 
-          WHEN "paymentPlan" = 'FULL_PAYMENT' THEN ${TOTAL_COURSE_FEE}
-          WHEN "paymentPlan" = 'FIRST_HALF_COMPLETE' AND status = 'COMPLETE' THEN ${TOTAL_COURSE_FEE}
-          WHEN "paymentPlan" = 'FIRST_HALF_COMPLETE' AND status = 'BALANCE_HALF_PAYMENT' THEN ${TOTAL_COURSE_FEE / 2
-      }
-          WHEN "paymentPlan" = 'FOUR_INSTALLMENTS' THEN (
+          WHEN ps."paymentPlan" = 'FULL_PAYMENT' THEN COALESCE(NULLIF(REPLACE(c.price, ',', ''), '')::NUMERIC, ${TOTAL_COURSE_FEE})
+          WHEN ps."paymentPlan" = 'FIRST_HALF_COMPLETE' AND ps.status = 'COMPLETE' THEN COALESCE(NULLIF(REPLACE(c.price, ',', ''), '')::NUMERIC, ${TOTAL_COURSE_FEE})
+          WHEN ps."paymentPlan" = 'FIRST_HALF_COMPLETE' AND ps.status = 'BALANCE_HALF_PAYMENT' THEN COALESCE(NULLIF(REPLACE(c.price, ',', ''), '')::NUMERIC / 2, ${TOTAL_COURSE_FEE / 2})
+          WHEN ps."paymentPlan" = 'FOUR_INSTALLMENTS' THEN (
             SELECT COALESCE(SUM(amount), 0)
             FROM "PaymentInstallment" 
-            WHERE "paymentStatusId" = "PaymentStatus".id AND paid = true
+            WHERE "paymentStatusId" = ps.id AND paid = true
           )
           ELSE 0
         END) as total
-      FROM "PaymentStatus"
-      WHERE status != 'EXPIRED'
+      FROM "PaymentStatus" ps
+      LEFT JOIN "Course" c ON ps."courseId" = c.id
+      WHERE ps.status != 'EXPIRED'
     `;
 
     const revenueByTypeRaw = await prismadb.$queryRaw<
@@ -1905,23 +1906,23 @@ paymentApp.get("/admin/payments/stats", async (req: Request, res: Response) => {
       }>
     >`
       SELECT 
-        "paymentPlan",
+        ps."paymentPlan",
         SUM(CASE 
-          WHEN "paymentPlan" = 'FULL_PAYMENT' THEN ${TOTAL_COURSE_FEE}
-          WHEN "paymentPlan" = 'FIRST_HALF_COMPLETE' AND status = 'COMPLETE' THEN ${TOTAL_COURSE_FEE}
-          WHEN "paymentPlan" = 'FIRST_HALF_COMPLETE' AND status = 'BALANCE_HALF_PAYMENT' THEN ${TOTAL_COURSE_FEE / 2
-      }
-          WHEN "paymentPlan" = 'FOUR_INSTALLMENTS' THEN (
+          WHEN ps."paymentPlan" = 'FULL_PAYMENT' THEN COALESCE(NULLIF(REPLACE(c.price, ',', ''), '')::NUMERIC, ${TOTAL_COURSE_FEE})
+          WHEN ps."paymentPlan" = 'FIRST_HALF_COMPLETE' AND ps.status = 'COMPLETE' THEN COALESCE(NULLIF(REPLACE(c.price, ',', ''), '')::NUMERIC, ${TOTAL_COURSE_FEE})
+          WHEN ps."paymentPlan" = 'FIRST_HALF_COMPLETE' AND ps.status = 'BALANCE_HALF_PAYMENT' THEN COALESCE(NULLIF(REPLACE(c.price, ',', ''), '')::NUMERIC / 2, ${TOTAL_COURSE_FEE / 2})
+          WHEN ps."paymentPlan" = 'FOUR_INSTALLMENTS' THEN (
             SELECT COALESCE(SUM(amount), 0)
             FROM "PaymentInstallment" 
-            WHERE "paymentStatusId" = "PaymentStatus".id AND paid = true
+            WHERE "paymentStatusId" = ps.id AND paid = true
           )
           ELSE 0
         END) as revenue,
         COUNT(*) as count
-      FROM "PaymentStatus"
-      WHERE status != 'EXPIRED'
-      GROUP BY "paymentPlan"
+      FROM "PaymentStatus" ps
+      LEFT JOIN "Course" c ON ps."courseId" = c.id
+      WHERE ps.status != 'EXPIRED'
+      GROUP BY ps."paymentPlan"
     `;
 
     const revenueByCourseRaw = await prismadb.$queryRaw<
@@ -1936,10 +1937,9 @@ paymentApp.get("/admin/payments/stats", async (req: Request, res: Response) => {
         c.id,
         c.title,
         SUM(CASE 
-          WHEN ps."paymentPlan" = 'FULL_PAYMENT' THEN ${TOTAL_COURSE_FEE}
-          WHEN ps."paymentPlan" = 'FIRST_HALF_COMPLETE' AND ps.status = 'COMPLETE' THEN ${TOTAL_COURSE_FEE}
-          WHEN ps."paymentPlan" = 'FIRST_HALF_COMPLETE' AND ps.status = 'BALANCE_HALF_PAYMENT' THEN ${TOTAL_COURSE_FEE / 2
-      }
+          WHEN ps."paymentPlan" = 'FULL_PAYMENT' THEN COALESCE(NULLIF(REPLACE(c.price, ',', ''), '')::NUMERIC, ${TOTAL_COURSE_FEE})
+          WHEN ps."paymentPlan" = 'FIRST_HALF_COMPLETE' AND ps.status = 'COMPLETE' THEN COALESCE(NULLIF(REPLACE(c.price, ',', ''), '')::NUMERIC, ${TOTAL_COURSE_FEE})
+          WHEN ps."paymentPlan" = 'FIRST_HALF_COMPLETE' AND ps.status = 'BALANCE_HALF_PAYMENT' THEN COALESCE(NULLIF(REPLACE(c.price, ',', ''), '')::NUMERIC / 2, ${TOTAL_COURSE_FEE / 2})
           WHEN ps."paymentPlan" = 'FOUR_INSTALLMENTS' THEN (
             SELECT COALESCE(SUM(amount), 0)
             FROM "PaymentInstallment" 
