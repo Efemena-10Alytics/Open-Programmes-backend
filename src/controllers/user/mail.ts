@@ -1,6 +1,5 @@
-import * as nodemailer from 'nodemailer';
+import { sendMail } from '../../utils/nodemailer';
 import * as dotenv from 'dotenv';
-import { transporter } from '../../utils/nodemailer';
 
 // Load environment variables
 dotenv.config();
@@ -90,7 +89,7 @@ export const sendAccountDeletionEmail = async ({ email, name }: AccountDeletionP
       `,
     };
 
-    await transporter.sendMail(mailOptions);
+    await sendMail(mailOptions);
   } catch (error) {
     console.error("Error sending account deletion email:", error);
     throw error;

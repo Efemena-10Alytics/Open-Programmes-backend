@@ -1,6 +1,6 @@
-import * as nodemailer from 'nodemailer';
-import * as dotenv from 'dotenv';
 import { prismadb } from "../../index";
+import * as dotenv from 'dotenv';
+import { sendMail } from '../../utils/nodemailer';
 
 // Load environment variables
 dotenv.config();
@@ -14,7 +14,7 @@ interface WelcomeEmailParams {
   courseId: string;
 }
 
-import { transporter } from '../../utils/nodemailer';
+
 
 export const sendWelcomeEmail = async ({ email, name, password, courseId }: WelcomeEmailParams) => {
   try {
@@ -120,7 +120,7 @@ export const sendWelcomeEmail = async ({ email, name, password, courseId }: Welc
       `,
     };
 
-    await transporter.sendMail(mailOptions);
+    await sendMail(mailOptions);
   } catch (error) {
     console.error("Error sending welcome email:", error);
     throw error;

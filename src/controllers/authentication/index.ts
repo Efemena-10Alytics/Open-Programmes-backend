@@ -6,6 +6,9 @@ import { generatePasswordResetToken, generateVerificationToken } from "./token";
 import { sendPasswordResetEmail, sendVerificationEmail } from "./mail";
 import { validateEmail } from "../../hooks/validate-email";
 import { validatePassword } from "../../hooks/validate-password";
+import { OAuth2Client } from "google-auth-library";
+
+const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
 export async function login(req: Request, res: Response) {
   try {
@@ -109,14 +112,40 @@ export async function googleAuth(req: Request, res: Response) {
       name,
       googleId,
       image,
-    }: { email: string; name: string; googleId: string; image?: string } =
-      req.body;
+      token, // Optional: The ID token from Google
+    }: {
+      email: string;
+      name: string;
+      googleId: string;
+      image?: string;
+      token?: string;
+    } = req.body;
 
     if (!email || !name || !googleId) {
       return res.status(400).json({ message: "Invalid Google credentials" });
     }
 
+    // Secure verification (if token is provided)
+    if (token) {
+      try {
+        const ticket = await googleClient.verifyIdToken({
+          idToken: token,
+          audience: process.env.GOOGLE_CLIENT_ID,
+        });
+        const payload = ticket.getPayload();
+        if (!payload || payload.email?.toLowerCase() !== email.toLowerCase()) {
+          return res.status(401).json({ message: "Invalid Google session" });
+        }
+      } catch (err) {
+        console.error("Token verification failed:", err);
+        return res.status(401).json({ message: "Token verification failed" });
+      }
+    } else {
+      console.warn("Google authentication requested without ID token. This is insecure.");
+    }
+
     // Checking if user exists with this email
+    //...
     let user = await prismadb.user.findUnique({
       where: { email },
     });

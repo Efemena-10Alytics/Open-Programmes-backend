@@ -10,7 +10,7 @@ const sendEmail = async (options) => {
         html: options.html,
     };
     try {
-        await nodemailer_1.transporter.sendMail(mailOptions);
+        await (0, nodemailer_1.sendMail)(mailOptions);
         console.log(`Email sent to ${options.to}`);
     }
     catch (error) {

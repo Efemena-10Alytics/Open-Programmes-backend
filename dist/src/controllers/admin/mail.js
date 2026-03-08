@@ -34,12 +34,12 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.sendWelcomeEmail = void 0;
-const dotenv = __importStar(require("dotenv"));
 const index_1 = require("../../index");
+const dotenv = __importStar(require("dotenv"));
+const nodemailer_1 = require("../../utils/nodemailer");
 // Load environment variables
 dotenv.config();
 const domain = process.env.NEXT_PUBLIC_APP_URL;
-const nodemailer_1 = require("../../utils/nodemailer");
 const sendWelcomeEmail = async ({ email, name, password, courseId }) => {
     try {
         const course = await index_1.prismadb.course.findUnique({
@@ -141,7 +141,7 @@ const sendWelcomeEmail = async ({ email, name, password, courseId }) => {
         </html>
       `,
         };
-        await nodemailer_1.transporter.sendMail(mailOptions);
+        await (0, nodemailer_1.sendMail)(mailOptions);
     }
     catch (error) {
         console.error("Error sending welcome email:", error);

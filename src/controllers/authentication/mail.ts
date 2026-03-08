@@ -7,7 +7,7 @@ dotenv.config();
 const resend = new Resend(process.env.RESEND_API_KEY);
 
 const domain = process.env.NEXT_PUBLIC_APP_URL
-import { transporter } from '../../utils/nodemailer';
+import { sendMail } from '../../utils/nodemailer';
 
 export const sendVerificationEmail = async (email: string, token: string) => {
   const confirmLink = `${domain}/auth/new-verification?token=${token}`;
@@ -73,7 +73,7 @@ export const sendVerificationEmail = async (email: string, token: string) => {
   };
 
   try {
-    await transporter.sendMail(mailOptions);
+    await sendMail(mailOptions);
   } catch (error) {
     console.error("Error sending verification email:", error);
     throw error;
@@ -149,7 +149,7 @@ export const sendPasswordResetEmail = async (email: string, token: string) => {
   };
 
   try {
-    await transporter.sendMail(mailOptions);
+    await sendMail(mailOptions);
   } catch (error) {
     console.error("Error sending password reset email:", error);
     throw error;

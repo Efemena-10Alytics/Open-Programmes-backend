@@ -34,8 +34,8 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.sendAccountDeletionEmail = void 0;
-const dotenv = __importStar(require("dotenv"));
 const nodemailer_1 = require("../../utils/nodemailer");
+const dotenv = __importStar(require("dotenv"));
 // Load environment variables
 dotenv.config();
 const sendAccountDeletionEmail = async ({ email, name }) => {
@@ -116,7 +116,7 @@ const sendAccountDeletionEmail = async ({ email, name }) => {
         </html>
       `,
         };
-        await nodemailer_1.transporter.sendMail(mailOptions);
+        await (0, nodemailer_1.sendMail)(mailOptions);
     }
     catch (error) {
         console.error("Error sending account deletion email:", error);

@@ -32,47 +32,37 @@ var __importStar = (this && this.__importStar) || (function () {
         return result;
     };
 })();
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.sendMail = exports.transporter = void 0;
-const nodemailer = __importStar(require("nodemailer"));
-const mailgun_1 = require("./mailgun");
+exports.sendEmail = void 0;
+const mailgun_js_1 = __importDefault(require("mailgun.js"));
+const form_data_1 = __importDefault(require("form-data"));
 const dotenv = __importStar(require("dotenv"));
 dotenv.config();
-// Creating a transporter object using SMTP transport
-exports.transporter = nodemailer.createTransport({
-    service: process.env.EMAIL_SERVICE,
-    auth: {
-        user: process.env.EMAIL_USER,
-        pass: process.env.EMAIL_PASSWORD,
-    },
+const mailgun = new mailgun_js_1.default(form_data_1.default);
+const mg = mailgun.client({
+    username: 'api',
+    key: process.env.MAILGUN_API_KEY || 'your-mailgun-api-key',
 });
-/**
- * Unified sendMail function that prefers Mailgun API if configured,
- * otherwise falls back to nodemailer SMTP.
- * Use this function instead of transporter.sendMail directly.
- */
-const sendMail = async (options) => {
-    // Use Mailgun if API key and domain are provided
-    if (process.env.MAILGUN_API_KEY &&
-        process.env.MAILGUN_DOMAIN &&
-        process.env.MAILGUN_API_KEY !== 'your_mailgun_api_key' &&
-        process.env.MAILGUN_API_KEY !== '') {
-        try {
-            return await (0, mailgun_1.sendEmail)(options.to, options.subject, options.html);
-        }
-        catch (error) {
-            console.error('Mailgun API failed, falling back to SMTP...', error);
-            // Fallback to SMTP below
-        }
+const domain = process.env.MAILGUN_DOMAIN || 'your-mailgun-domain';
+const sendEmail = async (to, subject, html) => {
+    const from = process.env.MAILGUN_FROM || 'Excited User <mailgun@your-domain.com>';
+    try {
+        const msg = await mg.messages.create(domain, {
+            from,
+            to: [to],
+            subject,
+            html,
+        });
+        console.log('Mailgun message sent:', msg);
+        return msg;
     }
-    // Fallback to SMTP
-    const mailOptions = {
-        from: options.from || process.env.EMAIL_FROM || process.env.EMAIL_USER,
-        to: options.to,
-        subject: options.subject,
-        html: options.html,
-    };
-    return await exports.transporter.sendMail(mailOptions);
+    catch (error) {
+        console.error('Mailgun error:', error);
+        throw error;
+    }
 };
-exports.sendMail = sendMail;
-//# sourceMappingURL=nodemailer.js.map
+exports.sendEmail = sendEmail;
+//# sourceMappingURL=mailgun.js.map

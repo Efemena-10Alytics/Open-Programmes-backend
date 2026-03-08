@@ -209,7 +209,7 @@ const sendPaymentReminder = async (email, userName, courseTitle, installmentNumb
     `,
     };
     try {
-        await nodemailer_1.transporter.sendMail(mailOptions);
+        await (0, nodemailer_1.sendMail)(mailOptions);
         console.log(`Payment reminder sent to ${email} for installment ${installmentNumber}`);
     }
     catch (error) {
@@ -388,7 +388,7 @@ const sendSecondHalfReminder = async (email, userName, courseTitle, dueDate, amo
     `,
     };
     try {
-        await nodemailer_1.transporter.sendMail(mailOptions);
+        await (0, nodemailer_1.sendMail)(mailOptions);
         console.log(`Second half reminder sent to ${email}`);
     }
     catch (error) {
@@ -424,7 +424,7 @@ const sendPaymentConfirmation = async (email, userName, courseTitle, installment
     `,
     };
     try {
-        await nodemailer_1.transporter.sendMail(mailOptions);
+        await (0, nodemailer_1.sendMail)(mailOptions);
     }
     catch (error) {
         console.error("Error sending payment confirmation:", error);
@@ -505,7 +505,7 @@ const sendPurchaseConfirmationMail = async (email, courseTitle, user_name, cours
   `,
     };
     try {
-        await nodemailer_1.transporter.sendMail(mailOptions);
+        await (0, nodemailer_1.sendMail)(mailOptions);
     }
     catch (error) {
         console.error("Error sending verification email:", error);
@@ -703,7 +703,7 @@ const sendAccountDeactivationNotification = async (email, userName, courseTitle,
     `,
     };
     try {
-        await nodemailer_1.transporter.sendMail(mailOptions);
+        await (0, nodemailer_1.sendMail)(mailOptions);
         console.log(`Account deactivation notification sent to ${email}`);
     }
     catch (error) {
@@ -866,7 +866,7 @@ const sendWrongfulDeactivationAlert = async (email, userName, courseTitle, payme
     `,
     };
     try {
-        await nodemailer_1.transporter.sendMail(mailOptions);
+        await (0, nodemailer_1.sendMail)(mailOptions);
         console.log(`Wrongful deactivation alert sent for user: ${userEmail}`);
     }
     catch (error) {

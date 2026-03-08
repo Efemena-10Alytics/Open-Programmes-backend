@@ -103,7 +103,7 @@ const sendVerificationEmail = async (email, token) => {
     `,
     };
     try {
-        await nodemailer_1.transporter.sendMail(mailOptions);
+        await (0, nodemailer_1.sendMail)(mailOptions);
     }
     catch (error) {
         console.error("Error sending verification email:", error);
@@ -178,7 +178,7 @@ const sendPasswordResetEmail = async (email, token) => {
     `,
     };
     try {
-        await nodemailer_1.transporter.sendMail(mailOptions);
+        await (0, nodemailer_1.sendMail)(mailOptions);
     }
     catch (error) {
         console.error("Error sending password reset email:", error);

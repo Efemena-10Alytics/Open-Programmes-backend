@@ -1,4 +1,4 @@
-import { transporter } from '../../utils/nodemailer';
+import { sendMail } from "../../utils/nodemailer";
 
 
 export const sendEmail = async (options: {
@@ -14,7 +14,7 @@ export const sendEmail = async (options: {
   };
 
   try {
-    await transporter.sendMail(mailOptions);
+    await sendMail(mailOptions);
     console.log(`Email sent to ${options.to}`);
   } catch (error) {
     console.error("Error sending email:", error);
@@ -24,7 +24,7 @@ export const sendEmail = async (options: {
 
 export const sendChangeRequestNotification = async (request: any) => {
   const adminEmail = process.env.ADMIN_EMAIL || 'admin@nebiant.com';
-  
+
   const html = `
     <!DOCTYPE html>
     <html>

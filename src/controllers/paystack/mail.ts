@@ -7,7 +7,7 @@ dotenv.config();
 const resend = new Resend(process.env.RESEND_API_KEY);
 
 const domain = process.env.NEXT_PUBLIC_APP_URL;
-import { transporter } from "../../utils/nodemailer";
+import { sendMail } from "../../utils/nodemailer";
 
 export const sendPaymentReminder = async (
   email: string,
@@ -43,9 +43,9 @@ export const sendPaymentReminder = async (
 
   // Calculate days until due if not provided
   const daysLeft = daysUntilDue !== undefined ? daysUntilDue : Math.ceil((dueDate.getTime() - Date.now()) / (1000 * 60 * 60 * 24));
-  
+
   const urgencyLevel = daysLeft <= 1 ? "high" : daysLeft <= 3 ? "medium" : "low";
-  
+
   const mailOptions = {
     from: process.env.EMAIL_FROM || "programrelations@nebiant.com",
     to: email,
@@ -145,12 +145,12 @@ export const sendPaymentReminder = async (
                  <span class="urgency-${urgencyLevel}">${daysLeft} day${daysLeft !== 1 ? 's' : ''}</span></p>
               <p><span class="badge badge-primary">Installment</span> #${installmentNumber}</p>
               <p><span class="badge badge-primary">Amount</span> <strong>₦${amount.toLocaleString()}</strong></p>
-              <p><span class="badge badge-primary">Due Date</span> ${dueDate.toLocaleDateString('en-US', { 
-                weekday: 'long', 
-                year: 'numeric', 
-                month: 'long', 
-                day: 'numeric' 
-              })}</p>
+              <p><span class="badge badge-primary">Due Date</span> ${dueDate.toLocaleDateString('en-US', {
+      weekday: 'long',
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric'
+    })}</p>
             </div>
 
             ${milestoneMessage}
@@ -176,9 +176,8 @@ export const sendPaymentReminder = async (
 
             <div class="footer">
               <p><strong>Need assistance?</strong><br>
-              Contact our support team at <a href="mailto:${process.env.EMAIL_FROM || "programrelations@nebiant.com"}">${
-      process.env.EMAIL_FROM || "programrelations@nebiant.com"
-    }</a></p>
+              Contact our support team at <a href="mailto:${process.env.EMAIL_FROM || "programrelations@nebiant.com"}">${process.env.EMAIL_FROM || "programrelations@nebiant.com"
+      }</a></p>
               
               <p style="margin-top: 15px; color: #999; font-size: 0.8em;">
                 This is an automated reminder. Please do not reply to this email.
@@ -192,7 +191,7 @@ export const sendPaymentReminder = async (
   };
 
   try {
-    await transporter.sendMail(mailOptions);
+    await sendMail(mailOptions);
     console.log(`Payment reminder sent to ${email} for installment ${installmentNumber}`);
   } catch (error) {
     console.error("Error sending payment reminder:", error);
@@ -211,7 +210,7 @@ export const sendSecondHalfReminder = async (
 ) => {
   const daysLeft = daysUntilDue !== undefined ? daysUntilDue : Math.ceil((dueDate.getTime() - Date.now()) / (1000 * 60 * 60 * 24));
   const urgencyLevel = daysLeft <= 1 ? "high" : daysLeft <= 3 ? "medium" : "low";
-  
+
   const formattedDate = dueDate.toLocaleDateString("en-NG", {
     weekday: "long",
     year: "numeric",
@@ -381,7 +380,7 @@ export const sendSecondHalfReminder = async (
   };
 
   try {
-    await transporter.sendMail(mailOptions);
+    await sendMail(mailOptions);
     console.log(`Second half reminder sent to ${email}`);
   } catch (error) {
     console.error("Error sending second half reminder:", error);
@@ -422,7 +421,7 @@ export const sendPaymentConfirmation = async (
   };
 
   try {
-    await transporter.sendMail(mailOptions);
+    await sendMail(mailOptions);
   } catch (error) {
     console.error("Error sending payment confirmation:", error);
     throw error;
@@ -508,7 +507,7 @@ export const sendPurchaseConfirmationMail = async (
   };
 
   try {
-    await transporter.sendMail(mailOptions);
+    await sendMail(mailOptions);
   } catch (error) {
     console.error("Error sending verification email:", error);
     throw error;
@@ -662,12 +661,12 @@ export const sendAccountDeactivationNotification = async (
             ${nextCohortDate ? `
             <div class="action-section">
               <h4>🔄 Good News - We've Moved You Forward</h4>
-              <p>To help you continue your learning journey, we've automatically enrolled you in the next available cohort starting on <strong>${nextCohortDate.toLocaleDateString('en-US', { 
-                weekday: 'long', 
-                year: 'numeric', 
-                month: 'long', 
-                day: 'numeric' 
-              })}</strong>.</p>
+              <p>To help you continue your learning journey, we've automatically enrolled you in the next available cohort starting on <strong>${nextCohortDate.toLocaleDateString('en-US', {
+      weekday: 'long',
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric'
+    })}</strong>.</p>
               <p>Once you make your payment, your access will be restored and you can join the new cohort.</p>
             </div>
             ` : ''}
@@ -714,7 +713,7 @@ export const sendAccountDeactivationNotification = async (
   };
 
   try {
-    await transporter.sendMail(mailOptions);
+    await sendMail(mailOptions);
     console.log(`Account deactivation notification sent to ${email}`);
   } catch (error) {
     console.error("Error sending account deactivation notification:", error);
@@ -822,14 +821,14 @@ export const sendWrongfulDeactivationAlert = async (
               <p><span class="badge badge-primary">Email</span> ${userEmail}</p>
               <p><span class="badge badge-info">Course</span> ${courseTitle}</p>
               <p><span class="badge badge-warning">Payment Plan</span> ${paymentPlan.replace(/_/g, ' ')}</p>
-              <p><span class="badge badge-danger">Deactivated</span> ${new Date().toLocaleDateString('en-US', { 
-                weekday: 'long', 
-                year: 'numeric', 
-                month: 'long', 
-                day: 'numeric',
-                hour: '2-digit',
-                minute: '2-digit'
-              })}</p>
+              <p><span class="badge badge-danger">Deactivated</span> ${new Date().toLocaleDateString('en-US', {
+      weekday: 'long',
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit'
+    })}</p>
             </div>
 
             <div class="reason-box">
@@ -884,7 +883,7 @@ export const sendWrongfulDeactivationAlert = async (
   };
 
   try {
-    await transporter.sendMail(mailOptions);
+    await sendMail(mailOptions);
     console.log(`Wrongful deactivation alert sent for user: ${userEmail}`);
   } catch (error) {
     console.error("Error sending wrongful deactivation alert:", error);
