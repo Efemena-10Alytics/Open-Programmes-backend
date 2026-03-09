@@ -15,6 +15,20 @@ async function applyForScholarship(req, res) {
             return res.status(400).json({ message: "Fill in all required fields!" });
         }
         const emailLower = email.toLowerCase();
+        // 1. Check if email is already used in a scholarship application
+        const existingEmailApp = await index_1.prismadb.scholarshipApplication.findFirst({
+            where: { email: emailLower }
+        });
+        if (existingEmailApp) {
+            return res.status(400).json({ message: "This email address has already been used to apply for a scholarship." });
+        }
+        // 2. Check if phone number is already used in a scholarship application
+        const existingPhoneApp = await index_1.prismadb.scholarshipApplication.findFirst({
+            where: { phone_number: phone_number }
+        });
+        if (existingPhoneApp) {
+            return res.status(400).json({ message: "This phone number has already been used to apply for a scholarship." });
+        }
         // Check if user already exists by email OR phone number
         let user = await index_1.prismadb.user.findFirst({
             where: {
@@ -24,20 +38,8 @@ async function applyForScholarship(req, res) {
                 ]
             }
         });
-        if (user) {
-            // If user exists, check if they already have an application for this program
-            const existingApplication = await index_1.prismadb.scholarshipApplication.findFirst({
-                where: {
-                    userId: user.id,
-                    program: program
-                }
-            });
-            if (existingApplication) {
-                return res.status(400).json({ message: "You have already applied for this program scholarship." });
-            }
-        }
-        else {
-            // Create user if not exists (Pass-less for now, or could generate a temporary one)
+        if (!user) {
+            // Create user if not exists
             user = await index_1.prismadb.user.create({
                 data: {
                     name: fullName,
