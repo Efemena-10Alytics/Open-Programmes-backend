@@ -37,7 +37,6 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.prismadb = void 0;
-// Updated index.ts
 const express_1 = __importDefault(require("express"));
 const http_1 = __importDefault(require("http"));
 const body_parser_1 = __importDefault(require("body-parser"));
@@ -45,6 +44,8 @@ const cookie_parser_1 = __importDefault(require("cookie-parser"));
 const compression_1 = __importDefault(require("compression"));
 const cors_1 = __importDefault(require("cors"));
 const dotenv_1 = __importDefault(require("dotenv"));
+// Load environment variables immediately after dotsenv import
+dotenv_1.default.config();
 const node_cron_1 = __importDefault(require("node-cron"));
 const prismadb_1 = require("./lib/prismadb");
 Object.defineProperty(exports, "prismadb", { enumerable: true, get: function () { return prismadb_1.prismadb; } });
@@ -53,7 +54,6 @@ const paystack_1 = __importDefault(require("./controllers/paystack"));
 const sales_dashboard_1 = __importDefault(require("./controllers/sales-dashboard"));
 const path_1 = __importDefault(require("path"));
 const app = (0, express_1.default)();
-dotenv_1.default.config();
 // CORS Configuration
 const corsOptions = {
     origin: [
