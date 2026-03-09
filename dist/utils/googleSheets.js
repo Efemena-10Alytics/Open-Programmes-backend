@@ -41,49 +41,58 @@ dotenv.config();
 const SCOPES = ['https://www.googleapis.com/auth/spreadsheets'];
 /**
  * Service to sync scholarship applications directly with Google Sheets.
- * This mirrors the functionality in the 10alytics-api project.
  */
 class GoogleSheetsSyncService {
     /**
-     * Initialize Google Auth using Service Account credentials from environment variables.
+     * Initialize Google Auth using Service Account credentials.
+     * Supports both raw JSON string and Base64 encoded JSON.
      */
     static getAuth() {
         if (this.auth)
             return this.auth;
-        const serviceAccountJsonBase64 = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
-        if (!serviceAccountJsonBase64) {
-            console.warn('[GOOGLE_SHEETS_SYNC]: GOOGLE_SERVICE_ACCOUNT_JSON not found in environment.');
-            throw new Error('Google Sheets service account credentials missing');
+        const configJson = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
+        if (!configJson) {
+            console.error('[GOOGLE_SHEETS_SYNC]: GOOGLE_SERVICE_ACCOUNT_JSON is missing in .env');
+            throw new Error('Google Sheets credentials missing');
         }
         try {
-            const decodedJson = Buffer.from(serviceAccountJsonBase64, 'base64').toString('utf8');
-            const credentials = JSON.parse(decodedJson);
+            let credentials;
+            // Try to parse as raw JSON first
+            if (configJson.trim().startsWith('{')) {
+                credentials = JSON.parse(configJson);
+            }
+            else {
+                // Otherwise assume it's Base64 (like in your other project)
+                const decodedJson = Buffer.from(configJson, 'base64').toString('utf8');
+                credentials = JSON.parse(decodedJson);
+            }
             this.auth = new google_auth_library_1.JWT({
                 email: credentials.client_email,
                 key: credentials.private_key,
                 scopes: SCOPES,
             });
+            console.log('[GOOGLE_SHEETS_SYNC]: Auth initialized for client_email:', credentials.client_email);
             return this.auth;
         }
         catch (error) {
-            console.error('[GOOGLE_SHEETS_SYNC]: Failed to parse service account JSON:', error);
+            console.error('[GOOGLE_SHEETS_SYNC]: Authentication setup failed:', error.message);
             throw new Error('Invalid Google Sheets credentials');
         }
     }
     /**
-     * Appends a scholarship application to the configured Google Sheet.
+     * Appends a scholarship application to the Google Sheet.
      */
     static async syncApplication(application) {
         try {
             const spreadsheetId = process.env.GOOGLE_SHEETS_IWD_2026_SPREADSHEET_ID;
             const range = process.env.GOOGLE_SHEETS_IWD_2026_RANGE || 'Sheet1!A1';
             if (!spreadsheetId) {
-                console.warn('[GOOGLE_SHEETS_SYNC]: SPREADSHEET_ID not configured. Skipping sync.');
+                console.warn('[GOOGLE_SHEETS_SYNC]: SPREADSHEET_ID not configured.');
                 return;
             }
             const auth = this.getAuth();
             const sheets = googleapis_1.google.sheets({ version: 'v4', auth });
-            // Prepare row data: [Full Name, Email, Phone, Country, Gender, Program, Cohort, Discount Code, Submitted At]
+            // Prepare row data
             const values = [
                 [
                     application.fullName,
@@ -93,25 +102,45 @@ class GoogleSheetsSyncService {
                     application.gender,
                     application.program,
                     application.cohort,
-                    application.discountCode || 'N/A',
-                    new Date(application.createdAt).toLocaleString('en-GB')
+                    application.discountCode || 'IWD 2026',
+                    new Date(application.createdAt || Date.now()).toLocaleString('en-GB')
                 ],
             ];
-            const resource = {
-                values,
-            };
             await sheets.spreadsheets.values.append({
                 spreadsheetId,
                 range,
                 valueInputOption: 'RAW',
-                requestBody: resource,
+                requestBody: { values },
             });
-            console.log(`[GOOGLE_SHEETS_SYNC]: Successfully synced application for ${application.email}`);
+            console.log(`[GOOGLE_SHEETS_SYNC]: Data successfully sent to sheet for ${application.email}`);
         }
         catch (error) {
-            console.error('[GOOGLE_SHEETS_SYNC]: Sync failed:', error.message);
-            // We log errors but don't re-throw to prevent breaking the application flow
+            console.error('[GOOGLE_SHEETS_SYNC]: Sync failed with entry:', application.email);
+            console.error('[GOOGLE_SHEETS_SYNC]: Error detail:', error.message);
+            if (error.message.includes('403')) {
+                console.error('[GOOGLE_SHEETS_SYNC]: TIP: Ensure you shared the sheet with Editor permissions to the Service Account email.');
+            }
+            if (error.message.includes('404')) {
+                console.error('[GOOGLE_SHEETS_SYNC]: TIP: Verify the Spreadsheet ID in your .env is correct.');
+            }
         }
+    }
+    /**
+     * Run a test sync to verify connection.
+     */
+    static async testConnection() {
+        console.log('[GOOGLE_SHEETS_SYNC]: Running connection test...');
+        await this.syncApplication({
+            fullName: 'Test Connection',
+            email: 'test@example.com',
+            phone_number: '0000000000',
+            country: 'Test',
+            gender: 'N/A',
+            program: 'Test Connection',
+            cohort: 'Test',
+            discountCode: 'TEST',
+            createdAt: new Date()
+        });
     }
 }
 exports.GoogleSheetsSyncService = GoogleSheetsSyncService;
