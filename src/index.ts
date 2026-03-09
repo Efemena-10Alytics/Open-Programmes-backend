@@ -1,4 +1,3 @@
-// Updated index.ts
 import express from "express";
 import http from "http";
 import bodyParser from "body-parser";
@@ -6,6 +5,10 @@ import cookieParser from "cookie-parser";
 import compression from "compression";
 import cors from "cors";
 import dotenv from "dotenv";
+
+// Load environment variables immediately after dotsenv import
+dotenv.config();
+
 import cron from "node-cron";
 import { prismadb } from "./lib/prismadb";
 export { prismadb };
@@ -16,8 +19,6 @@ import salesDashboardApp from "./controllers/sales-dashboard";
 import path from "path";
 
 const app = express();
-
-dotenv.config();
 
 // CORS Configuration
 const corsOptions = {

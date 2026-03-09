@@ -112,55 +112,79 @@ export async function googleAuth(req: Request, res: Response) {
       name,
       googleId,
       image,
-      token, // Optional: The ID token from Google
+      token, // ID Token
+      accessToken, // Access Token (for custom button flow)
     }: {
       email: string;
       name: string;
       googleId: string;
       image?: string;
       token?: string;
+      accessToken?: string;
     } = req.body;
 
-    if (!email || !name || !googleId) {
-      return res.status(400).json({ message: "Invalid Google credentials" });
+    if (!email || !googleId) {
+      return res.status(400).json({ message: "Invalid Google credentials: Email and ID are required" });
     }
 
-    // Secure verification (if token is provided)
+    // Secure verification
     if (token) {
+      // 1. Verify ID Token (Branded Button Flow)
       try {
         const ticket = await googleClient.verifyIdToken({
           idToken: token,
           audience: process.env.GOOGLE_CLIENT_ID,
         });
         const payload = ticket.getPayload();
+
         if (!payload || payload.email?.toLowerCase() !== email.toLowerCase()) {
-          return res.status(401).json({ message: "Invalid Google session" });
+          console.error("[GOOGLE_AUTH_MISTMATCH]: Payload email does not match requested email");
+          return res.status(401).json({ message: "Email mismatch in Google session" });
         }
-      } catch (err) {
-        console.error("Token verification failed:", err);
-        return res.status(401).json({ message: "Token verification failed" });
+      } catch (err: any) {
+        console.error("[GOOGLE_AUTH_VERIFY_ERROR]:", err.message);
+        return res.status(401).json({ message: "Google ID token verification failed" });
+      }
+    } else if (accessToken) {
+      // 2. Verify Access Token (Custom Button Flow)
+      try {
+        const axios = (await import('axios')).default;
+        // Verify with Google's tokeninfo endpoint
+        const verification = await axios.get(`https://www.googleapis.com/oauth2/v3/tokeninfo?access_token=${accessToken}`);
+        const data = verification.data;
+
+        if (data.email?.toLowerCase() !== email.toLowerCase()) {
+          return res.status(401).json({ message: "Email mismatch in Google session" });
+        }
+        if (data.sub !== googleId) {
+          return res.status(401).json({ message: "Google ID mismatch" });
+        }
+      } catch (err: any) {
+        console.error("[GOOGLE_AUTH_ACCESS_TOKEN_ERROR]:", err.message);
+        return res.status(401).json({ message: "Google access token verification failed" });
       }
     } else {
-      console.warn("Google authentication requested without ID token. This is insecure.");
+      console.warn("Google authentication requested without ID token or Access Token. This is insecure.");
     }
 
-    // Checking if user exists with this email
-    //...
+    const normalizedEmail = email.toLowerCase();
     let user = await prismadb.user.findUnique({
-      where: { email },
+      where: { email: normalizedEmail },
     });
 
     if (!user) {
       // Creating new user if doesn't exist
       user = await prismadb.user.create({
         data: {
-          email,
-          name,
-          image,
-          emailVerified: new Date(), // Google verified emails are considered verified
-          password: "", // No password for Google users
+          email: normalizedEmail,
+          name: name || "Google User",
+          image: image,
+          emailVerified: new Date(),
+          password: "",
         },
       });
+
+      console.log(`[GOOGLE_AUTH]: Created new user: ${normalizedEmail}`);
 
       // Creating account record for Google OAuth
       await prismadb.account.create({
@@ -171,10 +195,18 @@ export async function googleAuth(req: Request, res: Response) {
           providerAccountId: googleId,
         },
       });
+    } else {
+      // Update existing user's image if missing
+      if (!user.image && image) {
+        await prismadb.user.update({
+          where: { id: user.id },
+          data: { image },
+        });
+      }
     }
 
     // Checking if this Google account is linked to the user
-    const account = await prismadb.account.findFirst({
+    const existingAccount = await prismadb.account.findFirst({
       where: {
         userId: user.id,
         provider: "google",
@@ -182,8 +214,7 @@ export async function googleAuth(req: Request, res: Response) {
       },
     });
 
-    if (!account) {
-      // Linking the Google account if not already linked
+    if (!existingAccount) {
       await prismadb.account.create({
         data: {
           userId: user.id,
@@ -192,43 +223,38 @@ export async function googleAuth(req: Request, res: Response) {
           providerAccountId: googleId,
         },
       });
+      console.log(`[GOOGLE_AUTH]: Linked Google account to existing user: ${normalizedEmail}`);
     }
 
     // Generate tokens
     const access_token = jwt.sign(
-      {
-        email: user.email,
-        id: user.id,
-        role: user.role,
-      },
+      { email: user.email, id: user.id, role: user.role },
       process.env.JWT_SECRET as string,
       { expiresIn: "30d" }
     );
 
     const refresh_token = jwt.sign(
-      {
-        email: user.email,
-        id: user.id,
-        role: user.role,
-      },
+      { email: user.email, id: user.id, role: user.role },
       process.env.JWT_SECRET as string,
       { expiresIn: "30d" }
     );
 
     // Update user with new access token
-    await prismadb.user.update({
+    const updatedUser = await prismadb.user.update({
       where: { id: user.id },
       data: { access_token },
     });
 
+    console.log(`[GOOGLE_AUTH]: Login successful for: ${normalizedEmail}`);
+
     return res.status(200).json({
       status: "success",
       refresh_token,
-      data: { ...user, access_token },
+      data: { ...updatedUser, access_token },
     });
-  } catch (error) {
-    console.log("[GOOGLE_AUTH]:", error);
-    res.status(500).json({ message: "Internal Server Error" });
+  } catch (error: any) {
+    console.error("[GOOGLE_AUTH_CRASH]:", error);
+    res.status(500).json({ message: "Internal Server Error during Google Auth", detail: error.message });
   }
 }
 
