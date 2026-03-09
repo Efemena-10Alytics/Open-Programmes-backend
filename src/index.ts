@@ -50,6 +50,17 @@ cron.schedule("0 * * * *", async () => {
   console.log("🔄 Running hourly transaction cleanup...", new Date().toISOString());
 });
 
+// Run Google Sheets Full Sync every 30 minutes
+cron.schedule("*/30 * * * *", async () => {
+  console.log("📊 Starting scheduled Google Sheets Full Sync...", new Date().toISOString());
+  try {
+    const { GoogleSheetsSyncService } = await import("./utils/googleSheets");
+    await GoogleSheetsSyncService.syncAllApplications();
+  } catch (err) {
+    console.error("[CRON_SYNC_ERROR]:", err);
+  }
+});
+
 server.listen(8000, () => {
   console.log("🚀 Pluto Master Current is active at: http://localhost:8000");
 });

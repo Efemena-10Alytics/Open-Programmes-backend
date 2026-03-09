@@ -80,6 +80,62 @@ class GoogleSheetsSyncService {
         }
     }
     /**
+     * Re-syncs all applications from the database to the Google Sheet.
+     * This is useful for cron jobs to ensure the sheet is perfectly in sync.
+     */
+    static async syncAllApplications() {
+        try {
+            const spreadsheetId = process.env.GOOGLE_SHEETS_IWD_2026_SPREADSHEET_ID;
+            const range = process.env.GOOGLE_SHEETS_IWD_2026_RANGE || 'Sheet1!A1';
+            if (!spreadsheetId) {
+                console.warn('[GOOGLE_SHEETS_SYNC]: SPREADSHEET_ID not configured for full sync.');
+                return;
+            }
+            // Import prismadb dynamically to avoid circular dependencies
+            const { prismadb } = await Promise.resolve().then(() => __importStar(require('../lib/prismadb')));
+            const applications = await prismadb.scholarshipApplication.findMany({
+                orderBy: { createdAt: 'desc' }
+            });
+            if (applications.length === 0) {
+                console.log('[GOOGLE_SHEETS_SYNC]: No applications found in DB to sync.');
+                return;
+            }
+            const auth = this.getAuth();
+            const sheets = googleapis_1.google.sheets({ version: 'v4', auth });
+            // 1. Clear the sheet first for a clean export
+            await sheets.spreadsheets.values.clear({
+                spreadsheetId,
+                range,
+                requestBody: {}
+            });
+            // 2. Prepare Header and Data
+            const header = ['Full Name', 'Email', 'Phone', 'Country', 'Gender', 'Program', 'Cohort', 'Discount Code', 'Submitted At'];
+            const rows = applications.map(app => [
+                app.fullName,
+                app.email,
+                app.phone_number,
+                app.country,
+                app.gender,
+                app.program,
+                app.cohort,
+                app.discountCode || 'IWD 2026',
+                new Date(app.createdAt).toLocaleString('en-GB')
+            ]);
+            const values = [header, ...rows];
+            // 3. Write all data
+            await sheets.spreadsheets.values.update({
+                spreadsheetId,
+                range,
+                valueInputOption: 'RAW',
+                requestBody: { values },
+            });
+            console.log(`[GOOGLE_SHEETS_SYNC]: Full sync completed. ${applications.length} applications exported.`);
+        }
+        catch (error) {
+            console.error('[GOOGLE_SHEETS_SYNC]: Full sync failed:', error.message);
+        }
+    }
+    /**
      * Appends a scholarship application to the Google Sheet.
      */
     static async syncApplication(application) {
