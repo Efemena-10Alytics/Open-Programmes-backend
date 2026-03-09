@@ -1,5 +1,5 @@
 import { Request, Response } from "express";
-import { prismadb } from "../../../src/index";
+import { prismadb } from "../../index";
 import jwt from "jsonwebtoken";
 import { sendIWDRegistrationEmail } from "./mail";
 
@@ -72,7 +72,7 @@ export async function applyForScholarship(req: Request, res: Response) {
         });
 
         // Sync to Google Sheets in the background
-        import("../../../src/utils/googleSheets").then(({ GoogleSheetsSyncService }) => {
+        import("../../utils/googleSheets").then(({ GoogleSheetsSyncService }) => {
             GoogleSheetsSyncService.syncApplication(application).catch(err => {
                 console.error("[GOOGLE_SHEETS_SYNC_ERROR]:", err);
             });

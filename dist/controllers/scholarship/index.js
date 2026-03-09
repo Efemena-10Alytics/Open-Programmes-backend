@@ -38,7 +38,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.applyForScholarship = applyForScholarship;
 exports.getScholarshipApplications = getScholarshipApplications;
-const index_1 = require("../../../src/index");
+const index_1 = require("../../index");
 const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
 const mail_1 = require("./mail");
 async function applyForScholarship(req, res) {
@@ -101,7 +101,7 @@ async function applyForScholarship(req, res) {
             console.error("[SCHOLARSHIP_EMAIL_ERROR]:", err);
         });
         // Sync to Google Sheets in the background
-        Promise.resolve().then(() => __importStar(require("../../../src/utils/googleSheets"))).then(({ GoogleSheetsSyncService }) => {
+        Promise.resolve().then(() => __importStar(require("../../utils/googleSheets"))).then(({ GoogleSheetsSyncService }) => {
             GoogleSheetsSyncService.syncApplication(application).catch(err => {
                 console.error("[GOOGLE_SHEETS_SYNC_ERROR]:", err);
             });
