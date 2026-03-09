@@ -73,7 +73,7 @@ export const sendIWDRegistrationEmail = async (email: string, name: string) => {
                     
                     <p style="margin-bottom: 5px;"><strong>Let’s Talk:</strong></p>
                     <div style="text-align: center;">
-                        <a href="https://calendly.com/adeizasuleman/how-can-we-help-you" class="button">Book a Career Session</a>
+                        <a href="https://calendly.com/uche-10alytics/10alyticsbusiness-clarity-session" class="button">Book a Career Session</a>
                     </div>
                     
                     <p>During this session, you’ll be able to:</p>
@@ -89,7 +89,7 @@ export const sendIWDRegistrationEmail = async (email: string, name: string) => {
                     <p>We’re excited about what the future holds for you in tech.</p>
                     
                     <p>You can join the community with this link: <br>
-                    <a href="https://chat.whatsapp.com/Ic1xzmKCJfe0IuRnyoDcec?mode=hq2tcli" class="highlight">Join the Community</a></p>
+                    <a href="https://chat.whatsapp.com/FVAV3hCKYHWF2Ep4xsTXBB?mode=gi_t" class="highlight">Join the Community</a></p>
                     
                     <p>Warm regards,<br>
                     <strong>The 10Alytics Team</strong></p>
