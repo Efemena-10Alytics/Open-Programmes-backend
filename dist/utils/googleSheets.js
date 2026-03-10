@@ -136,7 +136,6 @@ class GoogleSheetsSyncService {
                 'Selected Cohort',
                 'Discount Code',
                 'Payment Status (IWD)',
-                'Account Overall Status',
                 'Paid Cohort',
                 'Submitted At'
             ];
@@ -165,7 +164,6 @@ class GoogleSheetsSyncService {
                     app.cohort,
                     app.discountCode || 'IWD 2026',
                     realStatus,
-                    app.user?.accountPaymentStatus || 'UNPAID',
                     paidCohort,
                     new Date(app.createdAt).toLocaleString('en-GB')
                 ];

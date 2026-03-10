@@ -12,7 +12,8 @@ const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
 export async function login(req: Request, res: Response) {
   try {
-    const { password }: { password: string } = req.body;
+    const { password: rawPassword }: { password: string } = req.body;
+    const password = rawPassword.trim();
     const email: string = req.body.email?.toLowerCase();
 
     if (!email || !password) {
@@ -335,7 +336,8 @@ export async function account(req: Request, res: Response) {
 
 export async function register(req: Request, res: Response) {
   try {
-    const { name, password, phone_number } = req.body;
+    const { name, password: rawPassword, phone_number } = req.body;
+    const password = rawPassword.trim();
     const email: string = req.body.email?.toLowerCase();
 
     if (!name || !email || !password || !phone_number) {

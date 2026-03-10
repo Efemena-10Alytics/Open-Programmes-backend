@@ -56,7 +56,8 @@ const google_auth_library_1 = require("google-auth-library");
 const googleClient = new google_auth_library_1.OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 async function login(req, res) {
     try {
-        const { password } = req.body;
+        const { password: rawPassword } = req.body;
+        const password = rawPassword.trim();
         const email = req.body.email?.toLowerCase();
         if (!email || !password) {
             return res.status(400).json({ message: "Invalid Credentials" });
@@ -294,7 +295,8 @@ async function account(req, res) {
 }
 async function register(req, res) {
     try {
-        const { name, password, phone_number } = req.body;
+        const { name, password: rawPassword, phone_number } = req.body;
+        const password = rawPassword.trim();
         const email = req.body.email?.toLowerCase();
         if (!name || !email || !password || !phone_number) {
             return res.status(400).json({ message: "Fill in credentials!" });
