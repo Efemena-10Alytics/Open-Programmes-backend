@@ -42,30 +42,34 @@ export async function applyForScholarship(req: Request, res: Response) {
         });
 
         if (!user) {
-            console.log(`[SCHOLARSHIP_TRACE]: Creating NEW user for ${emailLower}. Password to save: ${hashedPassword ? "YES" : "NO"}`);
-            const userData = {
-                name: fullName,
-                email: emailLower,
-                phone_number: phone_number,
-                password: hashedPassword,
-                emailVerified: new Date(),
-            };
-            console.log(`[SCHOLARSHIP_TRACE]: userData object:`, JSON.stringify({ ...userData, password: hashedPassword ? "[HASHED]" : "NULL" }));
-
+            console.log(`[SCHOLARSHIP_TRACE]: Creating NEW user for ${emailLower}.`);
             user = await prismadb.user.create({
-                data: userData
+                data: {
+                    name: fullName,
+                    email: emailLower,
+                    phone_number: phone_number,
+                    password: hashedPassword,
+                    emailVerified: new Date(),
+                }
             });
-            console.log(`[SCHOLARSHIP_TRACE]: User created. ID: ${user.id}. Saved password in return: ${!!user.password}`);
+            console.log(`[SCHOLARSHIP_TRACE]: User created with ID: ${user.id}. Password saved: ${!!user.password}`);
         } else {
-            console.log(`[SCHOLARSHIP_TRACE]: Found user ${user.id}. DB password: ${!!user.password}`);
-            if (hashedPassword && (!user.password || user.password.trim() === "")) {
-                console.log(`[SCHOLARSHIP_TRACE]: Updating missing password...`);
-                user = await prismadb.user.update({
-                    where: { id: user.id },
-                    data: { password: hashedPassword }
-                });
-                console.log(`[SCHOLARSHIP_TRACE]: Password update successful. New status: ${!!user.password}`);
+            console.log(`[SCHOLARSHIP_TRACE]: Found existing user ${user.id}. Syncing name, phone, and password.`);
+            // Update user details even if they exist, making this application act like a profile update if they use a new password
+            const updateData: any = {
+                name: fullName,
+                phone_number: phone_number,
+            };
+
+            if (hashedPassword) {
+                updateData.password = hashedPassword;
             }
+
+            user = await prismadb.user.update({
+                where: { id: user.id },
+                data: updateData
+            });
+            console.log(`[SCHOLARSHIP_TRACE]: User fields (name, phone, password) updated for ID: ${user.id}.`);
         }
 
         // 4. Scholarship Application (Create or Update)
