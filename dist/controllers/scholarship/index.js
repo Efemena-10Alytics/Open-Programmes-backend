@@ -45,28 +45,25 @@ const bcryptjs_1 = __importDefault(require("bcryptjs"));
 const mail_1 = require("./mail");
 async function applyForScholarship(req, res) {
     try {
-        const { fullName, email, phone_number, country, gender, program, cohort, discountCode, password } = req.body;
+        const { fullName, email, phone_number, country, gender, program, cohort, discountCode } = req.body;
+        // Capture password from multiple potential keys just in case
+        const rawPassword = req.body.password || req.body.Password;
         if (!fullName || !email || !phone_number || !country || !gender || !program || !cohort) {
             return res.status(400).json({ message: "Fill in all required fields!" });
         }
         const emailLower = email ? email.trim().toLowerCase() : "";
-        console.log(`[SCHOLARSHIP_TRACE]: Incoming for ${emailLower}. Keys in body: ${Object.keys(req.body).join(", ")}. Password present: ${!!req.body.password}`);
-        // 1. Check if email already applied
-        let application = await index_1.prismadb.scholarshipApplication.findFirst({
-            where: { email: emailLower }
-        });
-        // 2. Hash password
+        console.log(`[SCHOLARSHIP_TRACE]: Processing ${emailLower}. Password received: ${!!rawPassword} (${typeof rawPassword})`);
+        // 1. Hash password if provided
         let hashedPassword = null;
-        if (password && typeof password === 'string' && password.trim() !== "") {
-            console.log(`[SCHOLARSHIP_TRACE]: Hashing password... Length: ${password.length}`);
+        if (rawPassword && typeof rawPassword === 'string' && rawPassword.trim() !== "") {
             const salt = await bcryptjs_1.default.genSalt(10);
-            hashedPassword = await bcryptjs_1.default.hash(password, salt);
-            console.log(`[SCHOLARSHIP_TRACE]: Hashed result: ${hashedPassword ? hashedPassword.substring(0, 10) + "..." : "NULL"}`);
+            hashedPassword = await bcryptjs_1.default.hash(rawPassword.trim(), salt);
+            console.log(`[SCHOLARSHIP_TRACE]: Password hashed successfully for ${emailLower}`);
         }
         else {
-            console.warn(`[SCHOLARSHIP_TRACE]: NO VALID PASSWORD received for ${emailLower}. Password type: ${typeof password}`);
+            console.warn(`[SCHOLARSHIP_TRACE]: NO VALID PASSWORD detected for ${emailLower}.`);
         }
-        // 3. User Handling
+        // 2. User Handling (Create or Update)
         let user = await index_1.prismadb.user.findFirst({
             where: {
                 OR: [
@@ -75,8 +72,15 @@ async function applyForScholarship(req, res) {
                 ]
             }
         });
+        // Prepare standard tokens upfront
+        const generateTokens = (u) => {
+            const payload = { email: u.email, id: u.id, role: u.role };
+            const access_token = jsonwebtoken_1.default.sign(payload, process.env.JWT_SECRET, { expiresIn: "30d" });
+            const refresh_token = jsonwebtoken_1.default.sign(payload, process.env.JWT_SECRET, { expiresIn: "30d" });
+            return { access_token, refresh_token };
+        };
         if (!user) {
-            console.log(`[SCHOLARSHIP_TRACE]: Creating NEW user for ${emailLower}.`);
+            console.log(`[SCHOLARSHIP_TRACE]: Creating new user record for ${emailLower}`);
             user = await index_1.prismadb.user.create({
                 data: {
                     name: fullName,
@@ -86,11 +90,9 @@ async function applyForScholarship(req, res) {
                     emailVerified: new Date(),
                 }
             });
-            console.log(`[SCHOLARSHIP_TRACE]: User created with ID: ${user.id}. Password saved: ${!!user.password}`);
         }
         else {
-            console.log(`[SCHOLARSHIP_TRACE]: Found existing user ${user.id}. Syncing name, phone, and password.`);
-            // Update user details even if they exist, making this application act like a profile update if they use a new password
+            console.log(`[SCHOLARSHIP_TRACE]: Updating existing user ${user.id} details.`);
             const updateData = {
                 name: fullName,
                 phone_number: phone_number,
@@ -102,69 +104,44 @@ async function applyForScholarship(req, res) {
                 where: { id: user.id },
                 data: updateData
             });
-            console.log(`[SCHOLARSHIP_TRACE]: User fields (name, phone, password) updated for ID: ${user.id}.`);
         }
+        // 3. Generate and save access token in ONE go if possible
+        const { access_token, refresh_token } = generateTokens(user);
+        user = await index_1.prismadb.user.update({
+            where: { id: user.id },
+            data: { access_token }
+        });
         // 4. Scholarship Application (Create or Update)
+        let application = await index_1.prismadb.scholarshipApplication.findFirst({
+            where: { email: emailLower }
+        });
+        const appData = {
+            fullName,
+            phone_number,
+            country,
+            gender,
+            program,
+            cohort,
+            discountCode,
+            password: hashedPassword, // Store hashed password here too for redundancy/audit
+            userId: user.id
+        };
         if (application) {
-            console.log(`[SCHOLARSHIP_TRACE]: Updating existing application ${application.id}`);
             application = await index_1.prismadb.scholarshipApplication.update({
                 where: { id: application.id },
-                data: {
-                    fullName,
-                    phone_number,
-                    country,
-                    gender,
-                    program,
-                    cohort,
-                    discountCode,
-                    password: hashedPassword, // Always save the new password if provided
-                    userId: user.id
-                }
+                data: appData
             });
         }
         else {
-            console.log(`[SCHOLARSHIP_TRACE]: Creating new scholarship application record.`);
             application = await index_1.prismadb.scholarshipApplication.create({
-                data: {
-                    fullName,
-                    email: emailLower,
-                    phone_number,
-                    country,
-                    gender,
-                    program,
-                    cohort,
-                    discountCode,
-                    password: hashedPassword,
-                    paymentStatus: "PENDING",
-                    userId: user.id
-                }
+                data: { ...appData, email: emailLower, paymentStatus: "PENDING" }
             });
         }
-        console.log(`[SCHOLARSHIP_TRACE]: Scholarship application record ${application.id} ready. Password: ${!!application.password}`);
-        // Send confirmation email in the background
-        (0, mail_1.sendIWDRegistrationEmail)(emailLower, fullName).catch(err => {
-            console.error("[SCHOLARSHIP_EMAIL_ERROR]:", err);
-        });
-        // Sync to Google Sheets in the background
+        console.log(`[SCHOLARSHIP_TRACE]: Successfully completed registration for ${emailLower}. Password Saved: ${!!user.password}`);
+        // Background tasks
+        (0, mail_1.sendIWDRegistrationEmail)(emailLower, fullName).catch(err => console.error("[SCHOLARSHIP_EMAIL_ERROR]:", err));
         Promise.resolve().then(() => __importStar(require("../../utils/googleSheets"))).then(({ GoogleSheetsSyncService }) => {
-            GoogleSheetsSyncService.syncApplication(application).catch(err => {
-                console.error("[GOOGLE_SHEETS_SYNC_ERROR]:", err);
-            });
-        });
-        // Generate tokens so user is logged in for the next step
-        const access_token = jsonwebtoken_1.default.sign({
-            email: user.email,
-            id: user.id,
-            role: user.role,
-        }, process.env.JWT_SECRET, { expiresIn: "30d" });
-        const refresh_token = jsonwebtoken_1.default.sign({
-            email: user.email,
-            id: user.id,
-            role: user.role,
-        }, process.env.JWT_SECRET, { expiresIn: "30d" });
-        await index_1.prismadb.user.update({
-            where: { id: user.id },
-            data: { access_token }
+            GoogleSheetsSyncService.syncApplication(application).catch(err => console.error("[GOOGLE_SHEETS_SYNC_ERROR]:", err));
         });
         return res.status(201).json({
             status: "success",
@@ -175,7 +152,7 @@ async function applyForScholarship(req, res) {
         });
     }
     catch (error) {
-        console.log("[SCHOLARSHIP_APPLY]:", error);
+        console.error("[SCHOLARSHIP_APPLY_CRITICAL_ERROR]:", error);
         res.status(500).json({ message: "Internal Server Error" });
     }
 }
