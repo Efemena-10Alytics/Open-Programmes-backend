@@ -50,21 +50,21 @@ async function applyForScholarship(req, res) {
             return res.status(400).json({ message: "Fill in all required fields!" });
         }
         const emailLower = email ? email.trim().toLowerCase() : "";
-        console.log(`[SCHOLARSHIP_TRACE]: Incoming application for ${emailLower}. Password provided: ${!!password}`);
-        // 1. Check if email is already used in a scholarship application
+        console.log(`[SCHOLARSHIP_TRACE]: Incoming for ${emailLower}. Keys in body: ${Object.keys(req.body).join(", ")}. Password present: ${!!req.body.password}`);
+        // 1. Check if email already applied
         let application = await index_1.prismadb.scholarshipApplication.findFirst({
             where: { email: emailLower }
         });
-        // 2. Hash password if provided
+        // 2. Hash password
         let hashedPassword = null;
         if (password && typeof password === 'string' && password.trim() !== "") {
-            console.log(`[SCHOLARSHIP_TRACE]: Hashing password for ${emailLower}...`);
+            console.log(`[SCHOLARSHIP_TRACE]: Hashing password... Length: ${password.length}`);
             const salt = await bcryptjs_1.default.genSalt(10);
             hashedPassword = await bcryptjs_1.default.hash(password, salt);
-            console.log(`[SCHOLARSHIP_TRACE]: Password hashed successfully.`);
+            console.log(`[SCHOLARSHIP_TRACE]: Hashed result: ${hashedPassword ? hashedPassword.substring(0, 10) + "..." : "NULL"}`);
         }
         else {
-            console.warn(`[SCHOLARSHIP_TRACE]: No valid password string received for ${emailLower}. Type: ${typeof password}`);
+            console.warn(`[SCHOLARSHIP_TRACE]: NO VALID PASSWORD received for ${emailLower}. Password type: ${typeof password}`);
         }
         // 3. User Handling
         let user = await index_1.prismadb.user.findFirst({
@@ -76,31 +76,29 @@ async function applyForScholarship(req, res) {
             }
         });
         if (!user) {
-            console.log(`[SCHOLARSHIP_TRACE]: No existing user found for ${emailLower}. Creating new record.`);
+            console.log(`[SCHOLARSHIP_TRACE]: Creating NEW user for ${emailLower}. Password to save: ${hashedPassword ? "YES" : "NO"}`);
+            const userData = {
+                name: fullName,
+                email: emailLower,
+                phone_number: phone_number,
+                password: hashedPassword,
+                emailVerified: new Date(),
+            };
+            console.log(`[SCHOLARSHIP_TRACE]: userData object:`, JSON.stringify({ ...userData, password: hashedPassword ? "[HASHED]" : "NULL" }));
             user = await index_1.prismadb.user.create({
-                data: {
-                    name: fullName,
-                    email: emailLower,
-                    phone_number: phone_number,
-                    password: hashedPassword,
-                    emailVerified: new Date(),
-                }
+                data: userData
             });
-            console.log(`[SCHOLARSHIP_TRACE]: New user created with ID: ${user.id}. Password in DB: ${!!user.password}`);
+            console.log(`[SCHOLARSHIP_TRACE]: User created. ID: ${user.id}. Saved password in return: ${!!user.password}`);
         }
         else {
-            console.log(`[SCHOLARSHIP_TRACE]: Found existing user ${user.id} for ${emailLower}. Checking password...`);
-            // Update password if missing
+            console.log(`[SCHOLARSHIP_TRACE]: Found user ${user.id}. DB password: ${!!user.password}`);
             if (hashedPassword && (!user.password || user.password.trim() === "")) {
-                console.log(`[SCHOLARSHIP_TRACE]: Existing user had no password. Updating...`);
+                console.log(`[SCHOLARSHIP_TRACE]: Updating missing password...`);
                 user = await index_1.prismadb.user.update({
                     where: { id: user.id },
                     data: { password: hashedPassword }
                 });
-                console.log(`[SCHOLARSHIP_TRACE]: Existing user password populated.`);
-            }
-            else {
-                console.log(`[SCHOLARSHIP_TRACE]: Skipping user password update (already has one or no new password provided).`);
+                console.log(`[SCHOLARSHIP_TRACE]: Password update successful. New status: ${!!user.password}`);
             }
         }
         // 4. Scholarship Application (Create or Update)

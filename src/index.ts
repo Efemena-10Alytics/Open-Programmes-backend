@@ -28,8 +28,11 @@ const corsOptions = {
     process.env.NEXT_LOCAL_APP_URL,
     process.env.NEXT_LOCAL_ADMIN_APP_URL,
     process.env.NEXT_TEST_APP_URL,
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://localhost:3001",
     "https://paystack.com",
-  ],
+  ].filter(Boolean),
 };
 app.use(cors(corsOptions));
 app.use(cookieParser());
