@@ -268,7 +268,7 @@ paymentApp.get("/payment-status", async (req, res) => {
 });
 //#region Link Generation
 paymentApp.get("/payment-link", async (req, res) => {
-    const { userId, courseId, planType } = req.query;
+    const { userId, courseId, planType, channels } = req.query;
     if (!userId || !courseId) {
         return res.status(400).json({ error: "Missing userId or courseId" });
     }
@@ -298,16 +298,6 @@ paymentApp.get("/payment-link", async (req, res) => {
                 cohort: true, // Include cohort data
             },
         });
-        // Check for existing pending transaction first
-        if (paymentStatus && paymentStatus.transactions.length > 0) {
-            const pendingTx = paymentStatus.transactions[0];
-            if (pendingTx.authorizationUrl) {
-                return res.json({
-                    authorizationUrl: pendingTx.authorizationUrl,
-                    exists: true,
-                });
-            }
-        }
         // If no active link but we need to create one, we MUST have a cohort
         if (planType) {
             if (!paymentStatus || !paymentStatus.cohort) {
@@ -321,13 +311,24 @@ paymentApp.get("/payment-link", async (req, res) => {
             ]);
             // Use the cohort name from existing payment status
             const cohortName = paymentStatus.cohort.name;
-            const paymentData = getPaymentData(planType, cohortName);
+            const courseFee = parseCoursePrice(course.price);
+            const paymentData = getPaymentData(planType, cohortName, courseFee);
             if (!paymentData) {
                 return res.status(400).json({ error: "Invalid plan type" });
+            }
+            // Check for existing pending transaction that MATCHES this plan and amount
+            const pendingTx = paymentStatus.transactions.find(tx => tx.paymentPlan === paymentData.callbackParams.paymentPlan &&
+                tx.amount === paymentData.amount.toString());
+            if (pendingTx?.authorizationUrl) {
+                return res.json({
+                    authorizationUrl: pendingTx.authorizationUrl,
+                    exists: true,
+                });
             }
             const paymentLink = await paystack.transaction.initialize({
                 amount: `${paymentData.amount * 100}`,
                 email: user.email,
+                channels: channels || ["card", "bank_transfer", "mobile_money", "ussd", "qr"],
                 metadata: {
                     ...paymentData.metadata,
                     userId,
@@ -368,7 +369,7 @@ paymentApp.get("/payment-link", async (req, res) => {
 });
 //#region Payment Initialization Endpoints
 paymentApp.post("/initiate-payment", async (req, res) => {
-    const { courseId, userId, planType, cohortName, isIWD, applicationId, amount } = req.body;
+    const { courseId, userId, planType, cohortName, isIWD, applicationId, amount, channels } = req.body;
     try {
         let email = "";
         let name = "";
@@ -397,22 +398,6 @@ paymentApp.post("/initiate-payment", async (req, res) => {
             where: { userId_courseId: { userId, courseId } },
             include: { paymentInstallments: true },
         }) : null;
-        const [pendingTx] = await prismadb_1.prismadb.paystackTransaction.findMany({
-            where: {
-                userId: userId || undefined,
-                courseId,
-                status: "pending",
-                createdAt: { gt: new Date(Date.now() - 30 * 60 * 1000) },
-            },
-            orderBy: { createdAt: "desc" },
-            take: 1,
-        });
-        if (pendingTx?.authorizationUrl) {
-            return res.json({
-                authorizationUrl: pendingTx.authorizationUrl,
-                isExisting: true,
-            });
-        }
         const paymentData = getPaymentData(planType, cohortName, courseFee);
         if (!paymentData) {
             return res.status(400).json({ error: "Invalid plan type" });
@@ -421,9 +406,32 @@ paymentApp.post("/initiate-payment", async (req, res) => {
         if (isIWD && amount) {
             paymentData.amount = amount;
         }
+        const [pendingTx] = await prismadb_1.prismadb.paystackTransaction.findMany({
+            where: {
+                userId: userId || undefined,
+                courseId,
+                status: "pending",
+                createdAt: { gt: new Date(Date.now() - 30 * 60 * 1000) },
+                paymentPlan: paymentData.callbackParams.paymentPlan,
+                amount: paymentData.amount.toString(),
+            },
+            orderBy: { createdAt: "desc" },
+            take: 1,
+        });
+        if (pendingTx?.authorizationUrl) {
+            // Verify cohort matches too
+            const txMetadata = JSON.parse(pendingTx.metadata || "{}");
+            if (txMetadata.cohortName === cohortName) {
+                return res.json({
+                    authorizationUrl: pendingTx.authorizationUrl,
+                    isExisting: true,
+                });
+            }
+        }
         const paymentLink = await paystack.transaction.initialize({
             amount: `${paymentData.amount * 100}`,
             email: email,
+            channels: channels || ["card", "bank_transfer", "mobile_money", "ussd", "qr"],
             metadata: {
                 ...paymentData.metadata,
                 userId,
