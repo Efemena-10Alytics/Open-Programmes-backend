@@ -55,10 +55,28 @@ export async function applyForScholarship(req: Request, res: Response) {
         // 3. ATOMIC TRANSACTIONS (FOOLPROOF IDENTITY MANAGEMENT)
         const result = await prismadb.$transaction(async (tx) => {
 
-            // A. Identity management (User)
+            // A. Check for existing application by email OR phone first
+            // This satisfies the requirement to redirect existing applicants without errors.
+            let application = await tx.scholarshipApplication.findFirst({
+                where: {
+                    OR: [
+                        { email: emailLower },
+                        { phone_number: phoneTrimmed }
+                    ]
+                }
+            });
+
+            // B. Identity management (User)
             let user = await tx.user.findUnique({
                 where: { email: emailLower }
             });
+
+            if (!user) {
+                // If not found by email, check by phone to avoid "PHONE_TAKEN" error
+                user = await tx.user.findUnique({
+                    where: { phone_number: phoneTrimmed }
+                });
+            }
 
             if (user) {
                 console.log(`${TRACE_ID} Updating existing user profile for ID: ${user.id}`);
@@ -75,15 +93,6 @@ export async function applyForScholarship(req: Request, res: Response) {
                     data: updateData
                 });
             } else {
-                // Check for phone number collision
-                const existingPhoneUser = await tx.user.findUnique({
-                    where: { phone_number: phoneTrimmed }
-                });
-
-                if (existingPhoneUser) {
-                    throw new Error("PHONE_TAKEN");
-                }
-
                 console.log(`${TRACE_ID} Onboarding new user: ${emailLower}`);
                 user = await tx.user.create({
                     data: {
@@ -97,10 +106,18 @@ export async function applyForScholarship(req: Request, res: Response) {
                 });
             }
 
-            // B. Scholarship Application management
-            let application = await tx.scholarshipApplication.findFirst({
-                where: { email: emailLower }
-            });
+            // C. Scholarship Application management
+            if (application) {
+                console.log(`${TRACE_ID} Existing application found for ${emailLower} or ${phoneTrimmed}. Skipping application update.`);
+                // If the application wasn't linked to this user, link it now (edge case)
+                if (!application.userId) {
+                    application = await tx.scholarshipApplication.update({
+                        where: { id: application.id },
+                        data: { userId: user.id }
+                    });
+                }
+                return { user, application };
+            }
 
             const scholarshipPayload = {
                 fullName,
@@ -111,25 +128,15 @@ export async function applyForScholarship(req: Request, res: Response) {
                 cohort,
                 discountCode: discountCode || "IWD 2026",
                 password: hashedPassword, // Audit/Backup
-                userId: user.id
+                userId: user.id,
+                email: emailLower,
+                paymentStatus: "PENDING"
             };
 
-            if (application) {
-                console.log(`${TRACE_ID} Updating application ID: ${application.id}`);
-                application = await tx.scholarshipApplication.update({
-                    where: { id: application.id },
-                    data: scholarshipPayload
-                });
-            } else {
-                console.log(`${TRACE_ID} Recording new application.`);
-                application = await tx.scholarshipApplication.create({
-                    data: {
-                        ...scholarshipPayload,
-                        email: emailLower,
-                        paymentStatus: "PENDING"
-                    }
-                });
-            }
+            console.log(`${TRACE_ID} Recording new application.`);
+            application = await tx.scholarshipApplication.create({
+                data: scholarshipPayload
+            });
 
             return { user, application };
         });
