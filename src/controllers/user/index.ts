@@ -1,5 +1,5 @@
 import { Request, Response } from "express";
-import { prismadb } from "../../../src/index";
+import { prismadb } from "../../index";
 import { UserRole } from "@prisma/client";
 import { sendAccountDeletionEmail } from "./mail";
 import bcrypt from "bcryptjs";

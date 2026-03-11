@@ -1,6 +1,6 @@
 import bcrypt from "bcryptjs";
 import nodemailer from "nodemailer";
-import { prismadb } from "../../../src/index";
+import { prismadb } from "../../index";
 import { Response } from "express";
 
 export const sendOTPVerificationEmail = async (
