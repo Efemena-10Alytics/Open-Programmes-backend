@@ -952,9 +952,17 @@ paymentApp.get("/verify", async (req: Request, res: Response) => {
           process.env.JWT_SECRET as string,
           { expiresIn: "30d" }
         );
+        const userResponse = {
+          ...user,
+          hasPassword: !!user.password,
+          access_token
+        };
+        // @ts-ignore
+        delete userResponse.password;
+
         tokens = {
           access_token,
-          user: { ...user, access_token }
+          user: userResponse
         };
       }
     }

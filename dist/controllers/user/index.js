@@ -223,9 +223,16 @@ const getUser = async (req, res) => {
         if (!user) {
             return res.status(404).json({ message: "Nonexistent User!" });
         }
+        // Prepare user data for frontend (security first)
+        const userResponse = {
+            ...user,
+            hasPassword: !!user.password,
+        };
+        // @ts-ignore - delete the field for safety
+        delete userResponse.password;
         return res
             .status(200)
-            .json({ status: "success", message: null, data: user });
+            .json({ status: "success", message: null, data: userResponse });
     }
     catch (error) {
         handleServerError(error, res);
@@ -352,10 +359,17 @@ const updateUser = async (req, res) => {
                 },
             },
         });
+        // Prepare user data for frontend
+        const userResponse = {
+            ...updatedUser,
+            hasPassword: !!updatedUser.password,
+        };
+        // @ts-ignore
+        delete userResponse.password;
         return res.status(200).json({
             status: "success",
             message: "User updated successfully",
-            data: updatedUser,
+            data: userResponse,
         });
     }
     catch (error) {

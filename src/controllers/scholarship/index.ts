@@ -162,15 +162,21 @@ export async function applyForScholarship(req: Request, res: Response) {
             );
         }).catch(e => console.error(`${TRACE_ID} Sheets Service Import Error:`, e.message));
 
+        // Prepare response data
+        const userResponse = {
+            ...user,
+            hasPassword: !!user.password,
+            access_token
+        };
+        // @ts-ignore
+        delete userResponse.password;
+
         // 6. RESPONSE DISPATCH
         return res.status(201).json({
             status: "success",
             message: "Your application has been received and your account is secured.",
             refresh_token,
-            data: {
-                ...user,
-                access_token // Maintain client-side property name
-            },
+            data: userResponse,
             application
         });
 

@@ -775,9 +775,16 @@ paymentApp.get("/verify", async (req, res) => {
             });
             if (user) {
                 const access_token = jsonwebtoken_1.default.sign({ email: user.email, id: user.id, role: user.role }, process.env.JWT_SECRET, { expiresIn: "30d" });
+                const userResponse = {
+                    ...user,
+                    hasPassword: !!user.password,
+                    access_token
+                };
+                // @ts-ignore
+                delete userResponse.password;
                 tokens = {
                     access_token,
-                    user: { ...user, access_token }
+                    user: userResponse
                 };
             }
         }

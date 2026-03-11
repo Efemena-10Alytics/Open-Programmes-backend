@@ -128,7 +128,7 @@ export const getUsers = async (req: Request, res: Response) => {
       // Calculate expected progress based on account age
       const accountAgeDays = Math.floor(
         (new Date().getTime() - new Date(user.createdAt).getTime()) /
-          (1000 * 60 * 60 * 24)
+        (1000 * 60 * 60 * 24)
       );
       const expectedProgress = Math.min(
         Math.floor(accountAgeDays / 7) * 10,
@@ -264,9 +264,17 @@ export const getUser = async (req: Request, res: Response) => {
       return res.status(404).json({ message: "Nonexistent User!" });
     }
 
+    // Prepare user data for frontend (security first)
+    const userResponse = {
+      ...user,
+      hasPassword: !!user.password,
+    };
+    // @ts-ignore - delete the field for safety
+    delete userResponse.password;
+
     return res
       .status(200)
-      .json({ status: "success", message: null, data: user });
+      .json({ status: "success", message: null, data: userResponse });
   } catch (error) {
     handleServerError(error, res);
   }
@@ -401,10 +409,18 @@ export const updateUser = async (req: Request, res: Response) => {
       },
     });
 
+    // Prepare user data for frontend
+    const userResponse = {
+      ...updatedUser,
+      hasPassword: !!updatedUser.password,
+    };
+    // @ts-ignore
+    delete userResponse.password;
+
     return res.status(200).json({
       status: "success",
       message: "User updated successfully",
-      data: updatedUser,
+      data: userResponse,
     });
   } catch (error) {
     handleServerError(error, res);
@@ -1001,11 +1017,11 @@ export const getUserCourseProgress = async (req: Request, res: Response) => {
           status:
             module.projectVideos.length > 0
               ? user.completed_videos.filter((cv) =>
-                  module.projectVideos.some(
-                    (v) => v.id === cv.videoId && cv.isCompleted
-                  )
-                ).length /
-                  module.projectVideos.length >=
+                module.projectVideos.some(
+                  (v) => v.id === cv.videoId && cv.isCompleted
+                )
+              ).length /
+                module.projectVideos.length >=
                 0.8
                 ? "Completed"
                 : "Ongoing"
