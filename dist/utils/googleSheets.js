@@ -250,120 +250,115 @@ class GoogleSheetsSyncService {
     }
     /**
      * Syncs all payment data to Google Sheets.
-     * Exports: User info, Course, Cohort, Payment Status, Amount Paid, etc.
+     * Exports all fields from PaymentStatus (except IDs), followed by related names/prices,
+     * and a calculated Amount Paid field.
      */
     static async syncPaymentData() {
         console.log('[GOOGLE_SHEETS_PAYMENTS]: Starting payment data sync...');
         try {
             const spreadsheetId = process.env.GOOGLE_SHEETS_PAYMENTS_SPREADSHEET_ID;
-            const range = 'Sheet1!A1';
+            const sheetName = 'Sheet1'; // Using the full sheet name to clear everything
             if (!spreadsheetId) {
                 console.warn('[GOOGLE_SHEETS_PAYMENTS]: SPREADSHEET_ID not configured.');
                 return { success: false, error: 'Spreadsheet ID missing' };
             }
-            // Fetch all payment data with relations
+            // Fetch all PaymentStatus records with expanded relations
             const paymentStatuses = await prismadb_1.prismadb.paymentStatus.findMany({
                 include: {
                     user: true,
                     course: true,
-                    cohort: true,
-                    transactions: {
-                        orderBy: { paymentDate: 'desc' },
-                        take: 1
-                    },
-                    paymentInstallments: {
-                        orderBy: { installmentNumber: 'asc' }
-                    }
+                    cohort: true
                 },
                 orderBy: { createdAt: 'desc' }
             });
             if (paymentStatuses.length === 0) {
-                console.log('[GOOGLE_SHEETS_PAYMENTS]: No payment data found.');
+                console.log('[GOOGLE_SHEETS_PAYMENTS]: No payment data found in DB to sync.');
                 return { success: true, count: 0 };
             }
             const auth = this.getAuth();
             const sheets = googleapis_1.google.sheets({ version: 'v4', auth });
-            // Clear the sheet first
+            // 1. Clear the ENTIRE sheet first to remove any old columns/data
             try {
                 await sheets.spreadsheets.values.clear({
                     spreadsheetId,
-                    range,
+                    range: sheetName,
                     requestBody: {}
                 });
             }
             catch (clearErr) {
                 console.warn('[GOOGLE_SHEETS_PAYMENTS]: Clear failed:', clearErr.message);
             }
-            // Prepare headers
+            // 2. Prepare Headers (Strict Order as requested)
             const header = [
-                'ID',
-                'Full Name',
-                'Email',
-                'Phone',
-                'Course',
-                'Cohort',
+                'User Name',
+                'User Email',
+                'Course Name',
+                'Cohort Name',
+                'Course Price',
+                'Status',
                 'Payment Plan',
-                'Payment Status',
-                'Total Amount',
+                'Second Payment Due Date',
                 'Amount Paid',
-                'Remaining Amount',
-                'Total Installments',
-                'Paid Installments',
-                'Payment Date',
-                'Paystack Reference',
                 'Created At',
                 'Updated At'
             ];
-            // Prepare data rows
-            const rows = paymentStatuses.map((ps, index) => {
-                const lastTransaction = ps.transactions[0];
-                const paidInstallments = ps.paymentInstallments.filter(pi => pi.paid).length;
-                const totalInstallments = ps.paymentInstallments.length;
-                // Calculate total amount paid from transactions
-                let totalPaid = 0;
-                if (lastTransaction?.amount) {
-                    totalPaid = typeof lastTransaction.amount === 'string'
-                        ? parseFloat(lastTransaction.amount)
-                        : lastTransaction.amount;
+            // 3. Prepare Data Rows
+            const rows = paymentStatuses.map(ps => {
+                const coursePriceNum = this.parseCoursePrice(ps.course?.price);
+                let amountPaid = 0;
+                if (ps.status === 'COMPLETE') {
+                    amountPaid = coursePriceNum;
                 }
-                // Calculate remaining amount
-                const coursePrice = (ps.course?.price || 0);
-                const remaining = coursePrice - totalPaid;
+                else if (ps.status === 'BALANCE_HALF_PAYMENT') {
+                    amountPaid = Math.ceil(coursePriceNum / 2);
+                }
+                else {
+                    amountPaid = 0;
+                }
                 return [
-                    index + 1, // ID
                     ps.user?.name || 'N/A',
                     ps.user?.email || 'N/A',
-                    ps.user?.phone_number || 'N/A',
                     ps.course?.title || 'N/A',
                     ps.cohort?.name || 'N/A',
+                    ps.course?.price || 'N/A',
+                    ps.status,
                     ps.paymentPlan || 'N/A',
-                    ps.status || 'PENDING',
-                    coursePrice || 0,
-                    totalPaid || 0,
-                    Math.max(0, remaining) || 0,
-                    totalInstallments || 1,
-                    paidInstallments || 0,
-                    lastTransaction?.paymentDate ? new Date(lastTransaction.paymentDate).toLocaleString('en-GB') : 'N/A',
-                    lastTransaction?.transactionRef || 'N/A',
+                    ps.secondPaymentDueDate ? new Date(ps.secondPaymentDueDate).toLocaleDateString('en-GB') : 'N/A',
+                    amountPaid,
                     new Date(ps.createdAt).toLocaleString('en-GB'),
                     new Date(ps.updatedAt).toLocaleString('en-GB')
                 ];
             });
             const values = [header, ...rows];
-            // Write all data to sheet
+            // 4. Write data to Sheet starting at A1
             await sheets.spreadsheets.values.update({
                 spreadsheetId,
-                range,
+                range: `${sheetName}!A1`,
                 valueInputOption: 'RAW',
                 requestBody: { values },
             });
-            console.log(`[GOOGLE_SHEETS_PAYMENTS]: Sync completed. ${paymentStatuses.length} payment records exported.`);
+            console.log(`[GOOGLE_SHEETS_PAYMENTS]: Sync successful. ${paymentStatuses.length} records exported.`);
             return { success: true, count: paymentStatuses.length };
         }
         catch (error) {
             console.error('[GOOGLE_SHEETS_PAYMENTS]: Sync failed:', error.message);
             return { success: false, error: error.message };
         }
+    }
+    /**
+     * Robust price parser to handle strings like "100k", "250,000", etc.
+     */
+    static parseCoursePrice(priceStr) {
+        if (!priceStr)
+            return 250000; // Default fallback
+        let cleaned = String(priceStr).replace(/,/g, '').trim().toLowerCase();
+        let multiplier = 1;
+        if (cleaned.endsWith('k')) {
+            multiplier = 1000;
+            cleaned = cleaned.slice(0, -1);
+        }
+        const parsed = Number(cleaned);
+        return isNaN(parsed) ? 250000 : Math.ceil(parsed * multiplier);
     }
 }
 exports.GoogleSheetsSyncService = GoogleSheetsSyncService;
