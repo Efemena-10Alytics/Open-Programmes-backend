@@ -1,6 +1,6 @@
 import { Request, Response } from "express";
-import { prismadb } from "../../index";
-import { User } from "../../middleware/index";
+import { prismadb } from "../../lib/prismadb";
+import { NebiantUser } from "../../middleware/index";
 import { Purchase } from "@prisma/client";
 
 const handleServerError = (error: any, res: Response) => {
@@ -54,11 +54,7 @@ export const getCourses = async (req: Request, res: Response) => {
             },
           },
         },
-        cohorts: {
-          select: {
-            id: true,
-          },
-        },
+        cohorts: true, // Modified from select: { id: true } to true
         timetable: true,
       },
       orderBy: {
@@ -78,7 +74,7 @@ export const getCourse = async (req: Request, res: Response) => {
   try {
     const { courseId } = req.params;
 
-    const user = req.user as User;
+    const user = req.user as NebiantUser;
     const userId = user?.id;
     const isAdmin = user?.role === "ADMIN" || user?.role === "COURSE_ADMIN";
 
@@ -167,6 +163,7 @@ export const getCourse = async (req: Request, res: Response) => {
           },
         },
         timetable: true,
+        cohorts: true,
       },
     });
 
@@ -176,11 +173,10 @@ export const getCourse = async (req: Request, res: Response) => {
 
     return res.status(200).json({
       status: "success",
-      message: `${
-        user?.role === "USER" &&
+      message: `${user?.role === "USER" &&
         !coursePurchased &&
         "Course purchase not found, weekly attachments and video url is disabled"
-      }`,
+        }`,
       data: course,
     });
   } catch (error) {
@@ -269,6 +265,101 @@ export const deleteCourse = async (req: Request, res: Response) => {
       return res.status(404).json({ message: "Course does not exist" });
     }
 
+    // 1. Fetch related IDs for deep cleanup
+    const cohortCourses = await prismadb.cohortCourse.findMany({
+      where: { courseId },
+      select: { id: true }
+    });
+    const cohortCourseIds = cohortCourses.map(cc => cc.id);
+
+    const courseWeeks = await prismadb.courseWeek.findMany({
+      where: { courseId },
+      select: { id: true }
+    });
+    const courseWeekIds = courseWeeks.map(cw => cw.id);
+
+    // 2. Delete deep children (Leaf Nodes) first
+
+    // Cleanup for CohortCourse descendants
+    if (cohortCourseIds.length > 0) {
+      // Delete Comments linked to announcements/submissions/posts in these cohort courses
+      await prismadb.comment.deleteMany({
+        where: {
+          OR: [
+            { announcement: { cohortCourseId: { in: cohortCourseIds } } },
+            { submission: { assignment: { cohortCourseId: { in: cohortCourseIds } } } },
+            { streamPost: { cohortCourseId: { in: cohortCourseIds } } }
+          ]
+        }
+      });
+
+      // Delete Assignment Submissions
+      await prismadb.assignmentSubmission.deleteMany({
+        where: { assignment: { cohortCourseId: { in: cohortCourseIds } } }
+      });
+      // Delete Assignment Quiz Submissions if the model exists in the Prisma client
+      if ((prismadb as any).assignmentQuizSubmission) {
+        await (prismadb as any).assignmentQuizSubmission.deleteMany({
+          where: { assignment: { cohortCourseId: { in: cohortCourseIds } } }
+        });
+      }
+
+      // Delete Assignments
+      await prismadb.assignment.deleteMany({
+        where: { cohortCourseId: { in: cohortCourseIds } }
+      });
+
+      // Delete Classroom Topics, Stream Posts, Announcements, Materials, Recordings
+      await prismadb.classroomTopic.deleteMany({ where: { cohortCourseId: { in: cohortCourseIds } } });
+      await prismadb.streamPost.deleteMany({ where: { cohortCourseId: { in: cohortCourseIds } } });
+      await prismadb.announcement.deleteMany({ where: { cohortCourseId: { in: cohortCourseIds } } });
+      await prismadb.classMaterial.deleteMany({ where: { cohortCourseId: { in: cohortCourseIds } } });
+      await prismadb.classRecording.deleteMany({ where: { cohortCourseId: { in: cohortCourseIds } } });
+      await prismadb.cohortAttachment.deleteMany({ where: { cohortCourseId: { in: cohortCourseIds } } });
+      await prismadb.cohortQuiz.deleteMany({ where: { cohortCourseId: { in: cohortCourseIds } } });
+    }
+
+    // Cleanup for CourseWeek descendants
+    if (courseWeekIds.length > 0) {
+      await prismadb.module.deleteMany({
+        where: { courseWeekId: { in: courseWeekIds } }
+      });
+    }
+
+    // Cleanup for PaymentStatus descendants
+    await prismadb.paymentInstallment.deleteMany({
+      where: { paymentStatus: { courseId: courseId } }
+    });
+
+    // 3. Delete intermediate models
+    await prismadb.purchase.deleteMany({ where: { courseId } });
+    await prismadb.cohortCourse.deleteMany({ where: { courseId } });
+    await prismadb.cohort.deleteMany({ where: { courseId } });
+    await prismadb.timeTable.deleteMany({ where: { courseId } });
+    await prismadb.courseWeek.deleteMany({ where: { courseId } });
+
+    // Cleanup ChangeRequests
+    await prismadb.changeRequest.deleteMany({
+      where: {
+        OR: [
+          { currentCourseId: courseId },
+          { desiredCourseId: courseId }
+        ]
+      }
+    });
+
+    // 4. Delete Course-related simple models
+    await prismadb.skillsYouWillLearn.deleteMany({ where: { courseId } });
+    await prismadb.learningOutcome.deleteMany({ where: { courseId } });
+    await prismadb.prerequisite.deleteMany({ where: { courseId } });
+    await prismadb.tag.deleteMany({ where: { courseId } });
+    await prismadb.catalogHeaderTags.deleteMany({ where: { courseId } });
+    await prismadb.projectVideo.deleteMany({ where: { courseId } });
+    await prismadb.userProgress.deleteMany({ where: { courseId } });
+    await prismadb.paymentStatus.deleteMany({ where: { courseId } });
+    await prismadb.paystackTransaction.deleteMany({ where: { courseId } });
+
+    // 5. Final delete of the Course
     await prismadb.course.delete({
       where: {
         id: courseId,
@@ -337,6 +428,7 @@ export const getCourseWithoutAuth = async (req: Request, res: Response) => {
           },
         },
         timetable: true,
+        cohorts: true,
       },
     });
 
@@ -413,6 +505,7 @@ export const getCourseWithoutAuthWithSlug = async (
           },
         },
         timetable: true,
+        cohorts: true,
       },
     });
 

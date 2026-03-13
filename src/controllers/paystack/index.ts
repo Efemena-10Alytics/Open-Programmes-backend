@@ -1,8 +1,9 @@
 import express from "express";
 import { Request, Response } from "express";
-import { prismadb } from "../../index";
+import { prismadb } from "../../lib/prismadb";
 import { Paystack } from "paystack-sdk";
 import { Prisma, PaymentStatusType } from "@prisma/client";
+import jwt from "jsonwebtoken";
 import {
   sendPurchaseConfirmationMail,
   sendPaymentReminder,
@@ -19,9 +20,19 @@ import {
   isWithinInterval,
 } from "date-fns";
 
+if (!process.env.PAYSTACK_SECRET_KEY) {
+  console.warn("⚠️ PAYSTACK_SECRET_KEY is missing from environment variables!");
+}
+
 const paystack = new Paystack(process.env.PAYSTACK_SECRET_KEY as string);
 const paymentApp = express.Router();
 paymentApp.use(express.json());
+
+// Logging middleware for payment routes
+paymentApp.use((req, res, next) => {
+  console.log(`[Payment] ${req.method} ${req.path}`, req.body || req.query);
+  next();
+});
 
 // Define payment plans as constants
 const PAYMENT_PLANS = {
@@ -68,6 +79,8 @@ async function getCourseDetails(courseId: string) {
     select: {
       id: true,
       title: true,
+      price: true,
+      discount: true,
       cohorts: {
         orderBy: { startDate: "asc" },
         select: {
@@ -79,6 +92,13 @@ async function getCourseDetails(courseId: string) {
       },
     },
   });
+}
+
+/** Parse a price string like "250000" or "250,000" to a number, falling back to TOTAL_COURSE_FEE */
+function parseCoursePrice(raw: string | null | undefined): number {
+  if (!raw) return TOTAL_COURSE_FEE;
+  const parsed = Number(String(raw).replace(/,/g, "").trim());
+  return parsed > 0 ? parsed : TOTAL_COURSE_FEE;
 }
 
 async function getUserDetails(userId: string) {
@@ -116,22 +136,22 @@ async function assignToSelectedCohort(
   cohortName: string,
   paymentPlan?: PaymentPlan
 ) {
+  // Fetch all cohorts for the course to perform robust matching
   const course = await tx.course.findUniqueOrThrow({
     where: { id: courseId },
     include: {
-      cohorts: {
-        where: {
-          name: cohortName,
-        },
-      },
+      cohorts: true, // Fetch all cohorts
     },
   });
 
-  if (!course.cohorts.length) {
+  // Find cohort with case-insensitive and whitespace-insensitive matching
+  const targetCohort = course.cohorts.find(
+    (c) => c.name.trim().toLowerCase() === cohortName.trim().toLowerCase()
+  );
+
+  if (!targetCohort) {
     throw new Error(`Cohort "${cohortName}" not found for this course`);
   }
-
-  const targetCohort = course.cohorts[0];
 
   let isPaymentActive = false;
 
@@ -263,25 +283,35 @@ paymentApp.get("/payment-status", async (req: Request, res: Response) => {
   }
 
   try {
-    const paymentStatus = await prismadb.paymentStatus.findUnique({
-      where: {
-        userId_courseId: {
-          userId: userId as string,
-          courseId: courseId as string,
-        },
-      },
-      include: {
-        paymentInstallments: {
-          orderBy: {
-            installmentNumber: "asc",
+    const [paymentStatus, course] = await Promise.all([
+      prismadb.paymentStatus.findUnique({
+        where: {
+          userId_courseId: {
+            userId: userId as string,
+            courseId: courseId as string,
           },
         },
-      },
-    });
+        include: {
+          paymentInstallments: {
+            orderBy: {
+              installmentNumber: "asc",
+            },
+          },
+        },
+      }),
+      prismadb.course.findUnique({
+        where: { id: courseId as string },
+        select: { price: true },
+      }),
+    ]);
 
     if (!paymentStatus) {
       return res.json(null);
     }
+
+    // Use admin-set course price, falling back to env variable
+    const courseFee = parseCoursePrice(course?.price);
+    const halfFee = Math.ceil(courseFee / 2);
 
     let remainingAmount = 0;
     const paymentPlan = await getPaymentPlanFromRecord(paymentStatus);
@@ -290,13 +320,13 @@ paymentApp.get("/payment-status", async (req: Request, res: Response) => {
       paymentPlan === PAYMENT_PLANS.FIRST_HALF_COMPLETE &&
       paymentStatus.status === PaymentStatusType.BALANCE_HALF_PAYMENT
     ) {
-      remainingAmount = TOTAL_COURSE_FEE / 2;
+      remainingAmount = halfFee;
     } else if (paymentPlan === PAYMENT_PLANS.FOUR_INSTALLMENTS) {
       const paidInstallments = paymentStatus.paymentInstallments.filter(
         (i) => i.paid
       );
       const totalPaid = paidInstallments.reduce((sum, i) => sum + i.amount, 0);
-      remainingAmount = TOTAL_COURSE_FEE - totalPaid;
+      remainingAmount = courseFee - totalPaid;
     }
 
     res.json({
@@ -312,9 +342,10 @@ paymentApp.get("/payment-status", async (req: Request, res: Response) => {
   }
 });
 
+
 //#region Link Generation
 paymentApp.get("/payment-link", async (req: Request, res: Response) => {
-  const { userId, courseId, planType } = req.query;
+  const { userId, courseId, planType, channels } = req.query;
 
   if (!userId || !courseId) {
     return res.status(400).json({ error: "Missing userId or courseId" });
@@ -348,17 +379,6 @@ paymentApp.get("/payment-link", async (req: Request, res: Response) => {
       },
     });
 
-    // Check for existing pending transaction first
-    if (paymentStatus && paymentStatus.transactions.length > 0) {
-      const pendingTx = paymentStatus.transactions[0];
-      if (pendingTx.authorizationUrl) {
-        return res.json({
-          authorizationUrl: pendingTx.authorizationUrl,
-          exists: true,
-        });
-      }
-    }
-
     // If no active link but we need to create one, we MUST have a cohort
     if (planType) {
       if (!paymentStatus || !paymentStatus.cohort) {
@@ -375,15 +395,30 @@ paymentApp.get("/payment-link", async (req: Request, res: Response) => {
 
       // Use the cohort name from existing payment status
       const cohortName = paymentStatus.cohort.name;
+      const courseFee = parseCoursePrice(course.price);
 
-      const paymentData = getPaymentData(planType as string, cohortName);
+      const paymentData = getPaymentData(planType as string, cohortName, courseFee);
       if (!paymentData) {
         return res.status(400).json({ error: "Invalid plan type" });
+      }
+
+      // Check for existing pending transaction that MATCHES this plan and amount
+      const pendingTx = paymentStatus.transactions.find(tx =>
+        tx.paymentPlan === paymentData.callbackParams.paymentPlan &&
+        tx.amount === paymentData.amount.toString()
+      );
+
+      if (pendingTx?.authorizationUrl) {
+        return res.json({
+          authorizationUrl: pendingTx.authorizationUrl,
+          exists: true,
+        });
       }
 
       const paymentLink = await paystack.transaction.initialize({
         amount: `${paymentData.amount * 100}`,
         email: user.email!,
+        channels: (channels as string[]) || ["card", "bank_transfer", "mobile_money", "ussd", "qr"],
         metadata: {
           ...paymentData.metadata,
           userId,
@@ -414,7 +449,6 @@ paymentApp.get("/payment-link", async (req: Request, res: Response) => {
         isNew: true,
       });
     }
-
     res.json({ exists: false });
   } catch (error) {
     console.error("Error fetching payment link:", error);
@@ -427,49 +461,81 @@ paymentApp.get("/payment-link", async (req: Request, res: Response) => {
 
 //#region Payment Initialization Endpoints
 paymentApp.post("/initiate-payment", async (req: Request, res: Response) => {
-  const { courseId, userId, planType, cohortName } = req.body;
+  const { courseId, userId, planType, cohortName, isIWD, applicationId, amount, channels } = req.body;
 
   try {
-    const [user, course] = await Promise.all([
-      getUserDetails(userId),
-      getCourseDetails(courseId),
-    ]);
+    let email = "";
+    let name = "";
+    let phone = "";
 
-    const existingPayment = await prismadb.paymentStatus.findUnique({
+    if (isIWD && applicationId) {
+      const application = await prismadb.scholarshipApplication.findUnique({
+        where: { id: applicationId }
+      });
+      if (!application) return res.status(404).json({ error: "Application not found" });
+      email = application.email;
+      name = application.fullName;
+      phone = application.phone_number;
+    } else {
+      if (!userId) return res.status(400).json({ error: "Missing userId" });
+      const user = await getUserDetails(userId);
+      email = user.email!;
+      name = user.name || "Student";
+      phone = user.phone_number || "";
+    }
+
+    const course = await getCourseDetails(courseId);
+    const courseFee = isIWD ? (amount || 100000) : parseCoursePrice(course.price);
+
+    const existingPayment = userId ? await prismadb.paymentStatus.findUnique({
       where: { userId_courseId: { userId, courseId } },
       include: { paymentInstallments: true },
-    });
+    }) : null;
+
+    const paymentData = getPaymentData(planType, cohortName, courseFee);
+    if (!paymentData) {
+      return res.status(400).json({ error: "Invalid plan type" });
+    }
+
+    // Override amount if isIWD
+    if (isIWD && amount) {
+      paymentData.amount = amount;
+    }
 
     const [pendingTx] = await prismadb.paystackTransaction.findMany({
       where: {
-        userId,
+        userId: userId || undefined,
         courseId,
         status: "pending",
         createdAt: { gt: new Date(Date.now() - 30 * 60 * 1000) },
+        paymentPlan: paymentData.callbackParams.paymentPlan,
+        amount: paymentData.amount.toString(),
       },
       orderBy: { createdAt: "desc" },
       take: 1,
     });
 
     if (pendingTx?.authorizationUrl) {
-      return res.json({
-        authorizationUrl: pendingTx.authorizationUrl,
-        isExisting: true,
-      });
-    }
-
-    const paymentData = getPaymentData(planType, cohortName);
-    if (!paymentData) {
-      return res.status(400).json({ error: "Invalid plan type" });
+      // Verify cohort matches too
+      const txMetadata = JSON.parse(pendingTx.metadata || "{}");
+      if (txMetadata.cohortName === cohortName) {
+        return res.json({
+          authorizationUrl: pendingTx.authorizationUrl,
+          isExisting: true,
+        });
+      }
     }
 
     const paymentLink = await paystack.transaction.initialize({
       amount: `${paymentData.amount * 100}`,
-      email: user.email!,
+      email: email,
+      channels: channels || ["card", "bank_transfer", "mobile_money", "ussd", "qr"],
       metadata: {
         ...paymentData.metadata,
         userId,
         courseId,
+        isIWD,
+        applicationId,
         ...paymentData.callbackParams,
       },
       callback_url: `${process.env.PAYSTACK_CALLBACK_URL}`,
@@ -477,26 +543,31 @@ paymentApp.post("/initiate-payment", async (req: Request, res: Response) => {
 
     const transaction = await prismadb.$transaction(
       async (tx) => {
-        if (!existingPayment) {
+        if (userId && !existingPayment) {
           await createPaymentStatus(tx, {
             userId,
             courseId,
             paymentData,
             planType,
             cohortName,
+            courseFee,
           });
         }
 
         return tx.paystackTransaction.create({
           data: {
             transactionRef: paymentLink.data.reference,
-            userId,
+            userId: userId || "IWD_PENDING",
             courseId,
             amount: paymentData.amount.toString(),
             status: "pending",
             authorizationUrl: paymentLink.data.authorization_url,
             paymentPlan: paymentData.callbackParams.paymentPlan,
-            metadata: JSON.stringify(paymentData.metadata),
+            metadata: JSON.stringify({
+              ...paymentData.metadata,
+              isIWD,
+              applicationId
+            }),
             paymentDate: new Date(),
           },
         });
@@ -520,42 +591,21 @@ paymentApp.post("/initiate-payment", async (req: Request, res: Response) => {
   }
 });
 
-function getPaymentData(planType: string, cohortName: string) {
-  // Get cohort start date from the cohort name (extract month and year)
-  const cohortMatch = cohortName.match(/(\w+)\s+(\d{4})\s+Cohort/);
-  if (!cohortMatch) {
-    throw new Error("Invalid cohort name format");
-  }
-
-  const monthName = cohortMatch[1];
-  const year = parseInt(cohortMatch[2]);
-
-  const monthMap: { [key: string]: number } = {
-    January: 0,
-    February: 1,
-    March: 2,
-    April: 3,
-    May: 4,
-    June: 5,
-    July: 6,
-    August: 7,
-    September: 8,
-    October: 9,
-    November: 10,
-    December: 11,
-  };
-
-  const month = monthMap[monthName];
-  if (month === undefined) {
-    throw new Error("Invalid month name in cohort");
-  }
-
-  const startDate = new Date(year, month, 6); // 6th of the month as per your system
+/**
+ * Build payment data for a given plan type.
+ * @param planType  - "FULL" | "HALF" | "THREE_INSTALLMENT"
+ * @param cohortName - cohort the user selected
+ * @param courseFee  - the actual course fee fetched from the DB (admin-set price)
+ */
+function getPaymentData(planType: string, cohortName: string, courseFee: number = TOTAL_COURSE_FEE) {
+  // Use current date as baseline since actual schedule is calculated from DB cohort record
+  const startDate = new Date();
+  const halfFee = Math.ceil(courseFee / 2);
 
   switch (planType) {
     case "FULL":
       return {
-        amount: TOTAL_COURSE_FEE,
+        amount: courseFee,
         metadata: { planType: "FULL", cohortName },
         callbackParams: {
           paymentPlan: PAYMENT_PLANS.FULL_PAYMENT,
@@ -564,11 +614,11 @@ function getPaymentData(planType: string, cohortName: string) {
       };
     case "HALF":
       return {
-        amount: TOTAL_COURSE_FEE / 2,
+        amount: halfFee,
         metadata: { planType: "HALF", cohortName },
         callbackParams: {
           paymentPlan: PAYMENT_PLANS.FIRST_HALF_COMPLETE,
-          remainingAmount: TOTAL_COURSE_FEE / 2,
+          remainingAmount: halfFee,
           cohortName,
         },
       };
@@ -586,20 +636,6 @@ function getPaymentData(planType: string, cohortName: string) {
           cohortName,
         },
       };
-    case "INSTALLMENT":
-      return {
-        amount: INSTALLMENT_CONFIG.seatReservation,
-        metadata: {
-          planType: "INSTALLMENT",
-          schedule: getCohortSchedule(startDate),
-          cohortName,
-        },
-        callbackParams: {
-          paymentPlan: PAYMENT_PLANS.FOUR_INSTALLMENTS,
-          installmentNumber: 1,
-          cohortName,
-        },
-      };
     default:
       return null;
   }
@@ -613,6 +649,7 @@ async function createPaymentStatus(
     paymentData: any;
     planType: string;
     cohortName: string;
+    courseFee?: number;
   }
 ) {
   const cohort = await assignToSelectedCohort(
@@ -632,57 +669,30 @@ async function createPaymentStatus(
     cohortId: cohort.cohortId,
   };
 
-  if (
-    params.planType === "INSTALLMENT" ||
-    params.planType === "THREE_INSTALLMENT"
-  ) {
+  if (params.planType === "THREE_INSTALLMENT") {
     createData.desiredStartDate = cohort.actualStartDate;
 
     // Use the actual cohort start date for installment scheduling
     const actualStartDate = cohort.actualStartDate;
 
     createData.paymentInstallments = {
-      create:
-        params.planType === "INSTALLMENT"
-          ? [
-              {
-                amount: INSTALLMENT_CONFIG.seatReservation,
-                dueDate: actualStartDate, // Due at cohort start
-                installmentNumber: 1,
-              },
-              {
-                amount: INSTALLMENT_CONFIG.cohortAccess,
-                dueDate: addMonths(actualStartDate, 0), // Same month as start
-                installmentNumber: 2,
-              },
-              {
-                amount: INSTALLMENT_CONFIG.month1,
-                dueDate: addMonths(actualStartDate, 1), // 1 month after start
-                installmentNumber: 3,
-              },
-              {
-                amount: INSTALLMENT_CONFIG.month2,
-                dueDate: addMonths(actualStartDate, 2), // 2 months after start
-                installmentNumber: 4,
-              },
-            ]
-          : [
-              {
-                amount: THREE_INSTALLMENT_CONFIG.initialPayment,
-                dueDate: actualStartDate, // Due at cohort start
-                installmentNumber: 1,
-              },
-              {
-                amount: THREE_INSTALLMENT_CONFIG.month1,
-                dueDate: addMonths(actualStartDate, 1), // 1 month after start
-                installmentNumber: 2,
-              },
-              {
-                amount: THREE_INSTALLMENT_CONFIG.month2,
-                dueDate: addMonths(actualStartDate, 2),
-                installmentNumber: 3,
-              },
-            ],
+      create: [
+        {
+          amount: THREE_INSTALLMENT_CONFIG.initialPayment,
+          dueDate: actualStartDate,
+          installmentNumber: 1,
+        },
+        {
+          amount: THREE_INSTALLMENT_CONFIG.month1,
+          dueDate: addMonths(actualStartDate, 1),
+          installmentNumber: 2,
+        },
+        {
+          amount: THREE_INSTALLMENT_CONFIG.month2,
+          dueDate: addMonths(actualStartDate, 2),
+          installmentNumber: 3,
+        },
+      ],
     };
   }
 
@@ -772,7 +782,7 @@ paymentApp.get("/verify", async (req: Request, res: Response) => {
 
     const result = await prismadb.$transaction(
       async (tx) => {
-        const updatedTx = await tx.paystackTransaction.update({
+        let updatedTx = await tx.paystackTransaction.update({
           where: { transactionRef: reference as string },
           data: {
             status: "success",
@@ -781,24 +791,87 @@ paymentApp.get("/verify", async (req: Request, res: Response) => {
           },
         });
 
+        const txMetadata = JSON.parse(updatedTx.metadata || "{}");
+        let userId = updatedTx.userId;
+
+        // ✅ IWD LOGIC: Create user if this is a scholarship application
+        if (txMetadata.isIWD && txMetadata.applicationId) {
+          const application = await tx.scholarshipApplication.findUnique({
+            where: { id: txMetadata.applicationId },
+          });
+
+          if (!application) {
+            throw new Error("Scholarship application not found");
+          }
+
+          // Check if user already exists
+          let user = await tx.user.findFirst({
+            where: {
+              OR: [
+                { email: application.email },
+                { phone_number: application.phone_number }
+              ]
+            }
+          });
+
+          if (!user) {
+            user = await tx.user.create({
+              data: {
+                name: application.fullName,
+                email: application.email,
+                phone_number: application.phone_number,
+                password: application.password, // This is already hashed from applyForScholarship
+                emailVerified: new Date(),
+                accountPaymentStatus: "PAID"
+              },
+            });
+            console.log(`✅ Created user ${user.id} from IWD application ${application.id}`);
+          } else {
+            // Update existing user status if needed
+            user = await tx.user.update({
+              where: { id: user.id },
+              data: { accountPaymentStatus: "PAID" }
+            });
+          }
+
+          userId = user.id;
+
+          // Update transaction with the real userId
+          updatedTx = await tx.paystackTransaction.update({
+            where: { id: updatedTx.id },
+            data: { userId: user.id }
+          });
+
+          // Update application
+          await tx.scholarshipApplication.update({
+            where: { id: application.id },
+            data: {
+              userId: user.id,
+              paymentStatus: "PAID"
+            }
+          });
+        }
+
         const paymentPlan = await getPaymentPlanFromRecord(updatedTx);
 
         // ✅ CRITICAL: Reactivate user if they were marked inactive
-        if (existingTx.paymentStatus?.user?.inactive) {
-          await tx.user.update({
-            where: { id: existingTx.userId },
-            data: { inactive: false },
-          });
-          console.log(
-            `Reactivated user ${existingTx.userId} after successful payment`
-          );
+        if (existingTx.paymentStatus?.user?.inactive || (userId !== "IWD_PENDING")) {
+          const userToCheck = userId !== "IWD_PENDING" ? userId : updatedTx.userId;
+          const u = await tx.user.findUnique({ where: { id: userToCheck } });
+          if (u?.inactive) {
+            await tx.user.update({
+              where: { id: userToCheck },
+              data: { inactive: false },
+            });
+            console.log(`Reactivated user ${userToCheck} after successful payment`);
+          }
         }
 
         let paymentResult;
         switch (paymentPlan) {
           case PAYMENT_PLANS.FULL_PAYMENT:
             paymentResult = await handleFullPayment(tx, {
-              userId: updatedTx.userId,
+              userId: userId,
               courseId: updatedTx.courseId,
               reference: reference as string,
             });
@@ -806,7 +879,7 @@ paymentApp.get("/verify", async (req: Request, res: Response) => {
 
           case PAYMENT_PLANS.FIRST_HALF_COMPLETE:
             paymentResult = await handleFirstHalfPayment(tx, {
-              userId: updatedTx.userId,
+              userId: userId,
               courseId: updatedTx.courseId,
               reference: reference as string,
             });
@@ -814,7 +887,7 @@ paymentApp.get("/verify", async (req: Request, res: Response) => {
 
           case PAYMENT_PLANS.SECOND_HALF_PAYMENT:
             paymentResult = await handleSecondHalfPayment(tx, {
-              userId: updatedTx.userId,
+              userId: userId,
               courseId: updatedTx.courseId,
               reference: reference as string,
             });
@@ -826,7 +899,7 @@ paymentApp.get("/verify", async (req: Request, res: Response) => {
             paymentResult = await handleInstallmentPayment(
               tx,
               {
-                userId: updatedTx.userId,
+                userId: userId,
                 courseId: updatedTx.courseId,
                 installmentNumber: metadata.installmentNumber || 1,
                 paymentPlan: paymentPlan,
@@ -838,24 +911,22 @@ paymentApp.get("/verify", async (req: Request, res: Response) => {
         }
 
         // ✅ CRITICAL: Verify purchase was created for all payment types
-        // Check if purchase already exists first
         const existingPurchase = await tx.purchase.findFirst({
           where: {
-            userId: updatedTx.userId,
+            userId: userId,
             courseId: updatedTx.courseId,
           },
         });
 
         if (!existingPurchase) {
-          // Create purchase record if it doesn't exist
           await tx.purchase.create({
             data: {
-              userId: updatedTx.userId,
+              userId: userId,
               courseId: updatedTx.courseId,
             },
           });
           console.log(
-            `✅ Created purchase record for user ${updatedTx.userId} and course ${updatedTx.courseId}`
+            `✅ Created purchase record for user ${userId} and course ${updatedTx.courseId}`
           );
         }
 
@@ -878,9 +949,48 @@ paymentApp.get("/verify", async (req: Request, res: Response) => {
       console.error("Email notification failed:", emailError);
     }
 
+    // 🔄 Auto-sync payment data to Google Sheets after successful payment
+    try {
+      const { GoogleSheetsSyncService } = await import("../../utils/googleSheets");
+      GoogleSheetsSyncService.syncPaymentData().catch(e =>
+        console.error("Google Sheets sync error:", e.message)
+      );
+    } catch (sheetError) {
+      console.error("Sheet service error:", sheetError);
+    }
+
+    const isIWD = JSON.parse(result.metadata || "{}").isIWD;
+    let tokens = {};
+
+    if (isIWD) {
+      const user = await prismadb.user.findUnique({
+        where: { id: result.userId }
+      });
+      if (user) {
+        const access_token = jwt.sign(
+          { email: user.email, id: user.id, role: user.role },
+          process.env.JWT_SECRET as string,
+          { expiresIn: "30d" }
+        );
+        const userResponse = {
+          ...user,
+          hasPassword: !!user.password,
+          access_token
+        };
+        // @ts-ignore
+        delete userResponse.password;
+
+        tokens = {
+          access_token,
+          user: userResponse
+        };
+      }
+    }
+
     res.json({
       status: "success",
       data: result,
+      ...tokens,
       userReactivated: existingTx.paymentStatus?.user?.inactive,
     });
   } catch (error) {
@@ -896,16 +1006,16 @@ paymentApp.get("/verify", async (req: Request, res: Response) => {
 async function verifyPurchaseCreation(tx: Prisma.TransactionClient, userId: string, courseId: string) {
   const purchase = await tx.purchase.findFirst({
     where: {
-        userId,
-        courseId,
+      userId,
+      courseId,
     },
   });
-  
+
   if (!purchase) {
     // Log more details about the issue
     const user = await tx.user.findUnique({ where: { id: userId } });
     const course = await tx.course.findUnique({ where: { id: courseId } });
-    
+
     console.error(`Purchase record missing for:`, {
       userId,
       userEmail: user?.email,
@@ -913,11 +1023,11 @@ async function verifyPurchaseCreation(tx: Prisma.TransactionClient, userId: stri
       courseTitle: course?.title,
       timestamp: new Date().toISOString()
     });
-    
+
     throw new Error(`Purchase record not created for user ${userId} and course ${courseId}`);
   }
-  
-  
+
+
   return purchase;
 }
 
@@ -1040,8 +1150,8 @@ async function handleFirstHalfPayment(
     // ✅ CRITICAL: Check if purchase already exists first
     const existingPurchase = await tx.purchase.findFirst({
       where: {
-          userId: metadata.userId,
-          courseId: metadata.courseId,
+        userId: metadata.userId,
+        courseId: metadata.courseId,
       },
     });
 
@@ -1204,7 +1314,7 @@ async function handleInstallmentPayment(
         const newDueDate = addMonths(
           cohort.startDate,
           remainingInstallment.installmentNumber -
-            (paymentPlan === PAYMENT_PLANS.THREE_INSTALLMENTS ? 1 : 2)
+          (paymentPlan === PAYMENT_PLANS.THREE_INSTALLMENTS ? 1 : 2)
         );
 
         await tx.paymentInstallment.update({
@@ -1424,9 +1534,9 @@ cron.schedule("0 0 * * *", async () => {
           const cohortHasStarted = now >= cohortStartDate;
           const daysSinceCohortStart = cohortHasStarted
             ? Math.floor(
-                (now.getTime() - cohortStartDate.getTime()) /
-                  (24 * 60 * 60 * 1000)
-              )
+              (now.getTime() - cohortStartDate.getTime()) /
+              (24 * 60 * 60 * 1000)
+            )
             : -1;
           const monthsSinceCohortStart = Math.floor(
             daysSinceCohortStart / 30.44
@@ -1461,7 +1571,7 @@ cron.schedule("0 0 * * *", async () => {
                 const gracePeriodDays = 14; // More lenient for second half
                 const gracePeriodEnd = new Date(
                   paymentStatus.secondPaymentDueDate.getTime() +
-                    gracePeriodDays * 24 * 60 * 60 * 1000
+                  gracePeriodDays * 24 * 60 * 60 * 1000
                 );
 
                 if (now > gracePeriodEnd && paidCount < 2) {
@@ -1491,7 +1601,7 @@ cron.schedule("0 0 * * *", async () => {
                 const expectedDueDate = addMonths(cohortStartDate, 1);
                 const gracePeriodEnd = new Date(
                   expectedDueDate.getTime() +
-                    gracePeriodDays * 24 * 60 * 60 * 1000
+                  gracePeriodDays * 24 * 60 * 60 * 1000
                 );
 
                 if (now > gracePeriodEnd && paidCount < 2) {
@@ -1507,7 +1617,7 @@ cron.schedule("0 0 * * *", async () => {
                 const expectedDueDate = addMonths(cohortStartDate, 2);
                 const gracePeriodEnd = new Date(
                   expectedDueDate.getTime() +
-                    gracePeriodDays * 24 * 60 * 60 * 1000
+                  gracePeriodDays * 24 * 60 * 60 * 1000
                 );
 
                 if (now > gracePeriodEnd && paidCount < 3) {
@@ -1547,7 +1657,7 @@ cron.schedule("0 0 * * *", async () => {
                 const expectedDueDate = addMonths(cohortStartDate, 1);
                 const gracePeriodEnd = new Date(
                   expectedDueDate.getTime() +
-                    gracePeriodDays * 24 * 60 * 60 * 1000
+                  gracePeriodDays * 24 * 60 * 60 * 1000
                 );
 
                 if (now > gracePeriodEnd && paidCount < 3) {
@@ -1563,7 +1673,7 @@ cron.schedule("0 0 * * *", async () => {
                 const expectedDueDate = addMonths(cohortStartDate, 2);
                 const gracePeriodEnd = new Date(
                   expectedDueDate.getTime() +
-                    gracePeriodDays * 24 * 60 * 60 * 1000
+                  gracePeriodDays * 24 * 60 * 60 * 1000
                 );
 
                 if (now > gracePeriodEnd && paidCount < 4) {
@@ -1583,7 +1693,7 @@ cron.schedule("0 0 * * *", async () => {
           // Very lenient fallback - only deactivate if REALLY overdue
           const daysPastDue = Math.floor(
             (now.getTime() - installment.dueDate.getTime()) /
-              (24 * 60 * 60 * 1000)
+            (24 * 60 * 60 * 1000)
           );
           if (daysPastDue > 30) {
             // 30-day grace for edge cases
@@ -1632,7 +1742,7 @@ cron.schedule("0 0 * * *", async () => {
           try {
             const overdueDays = Math.floor(
               (now.getTime() - installment.dueDate.getTime()) /
-                (24 * 60 * 60 * 1000)
+              (24 * 60 * 60 * 1000)
             );
             await sendAccountDeactivationNotification(
               paymentStatus.user.email!,
@@ -1838,6 +1948,7 @@ paymentApp.get("/admin/payments", async (req: Request, res: Response) => {
           select: {
             id: true,
             title: true,
+            price: true,
           },
         },
         cohort: {
@@ -1909,20 +2020,19 @@ paymentApp.get("/admin/payments/stats", async (req: Request, res: Response) => {
     >`
       SELECT 
         SUM(CASE 
-          WHEN "paymentPlan" = 'FULL_PAYMENT' THEN ${TOTAL_COURSE_FEE}
-          WHEN "paymentPlan" = 'FIRST_HALF_COMPLETE' AND status = 'COMPLETE' THEN ${TOTAL_COURSE_FEE}
-          WHEN "paymentPlan" = 'FIRST_HALF_COMPLETE' AND status = 'BALANCE_HALF_PAYMENT' THEN ${
-            TOTAL_COURSE_FEE / 2
-          }
-          WHEN "paymentPlan" = 'FOUR_INSTALLMENTS' THEN (
+          WHEN ps."paymentPlan" = 'FULL_PAYMENT' THEN COALESCE(NULLIF(REPLACE(c.price, ',', ''), '')::NUMERIC, ${TOTAL_COURSE_FEE})
+          WHEN ps."paymentPlan" = 'FIRST_HALF_COMPLETE' AND ps.status = 'COMPLETE' THEN COALESCE(NULLIF(REPLACE(c.price, ',', ''), '')::NUMERIC, ${TOTAL_COURSE_FEE})
+          WHEN ps."paymentPlan" = 'FIRST_HALF_COMPLETE' AND ps.status = 'BALANCE_HALF_PAYMENT' THEN COALESCE(NULLIF(REPLACE(c.price, ',', ''), '')::NUMERIC / 2, ${TOTAL_COURSE_FEE / 2})
+          WHEN ps."paymentPlan" = 'FOUR_INSTALLMENTS' THEN (
             SELECT COALESCE(SUM(amount), 0)
             FROM "PaymentInstallment" 
-            WHERE "paymentStatusId" = "PaymentStatus".id AND paid = true
+            WHERE "paymentStatusId" = ps.id AND paid = true
           )
           ELSE 0
         END) as total
-      FROM "PaymentStatus"
-      WHERE status != 'EXPIRED'
+      FROM "PaymentStatus" ps
+      LEFT JOIN "Course" c ON ps."courseId" = c.id
+      WHERE ps.status != 'EXPIRED'
     `;
 
     const revenueByTypeRaw = await prismadb.$queryRaw<
@@ -1933,24 +2043,23 @@ paymentApp.get("/admin/payments/stats", async (req: Request, res: Response) => {
       }>
     >`
       SELECT 
-        "paymentPlan",
+        ps."paymentPlan",
         SUM(CASE 
-          WHEN "paymentPlan" = 'FULL_PAYMENT' THEN ${TOTAL_COURSE_FEE}
-          WHEN "paymentPlan" = 'FIRST_HALF_COMPLETE' AND status = 'COMPLETE' THEN ${TOTAL_COURSE_FEE}
-          WHEN "paymentPlan" = 'FIRST_HALF_COMPLETE' AND status = 'BALANCE_HALF_PAYMENT' THEN ${
-            TOTAL_COURSE_FEE / 2
-          }
-          WHEN "paymentPlan" = 'FOUR_INSTALLMENTS' THEN (
+          WHEN ps."paymentPlan" = 'FULL_PAYMENT' THEN COALESCE(NULLIF(REPLACE(c.price, ',', ''), '')::NUMERIC, ${TOTAL_COURSE_FEE})
+          WHEN ps."paymentPlan" = 'FIRST_HALF_COMPLETE' AND ps.status = 'COMPLETE' THEN COALESCE(NULLIF(REPLACE(c.price, ',', ''), '')::NUMERIC, ${TOTAL_COURSE_FEE})
+          WHEN ps."paymentPlan" = 'FIRST_HALF_COMPLETE' AND ps.status = 'BALANCE_HALF_PAYMENT' THEN COALESCE(NULLIF(REPLACE(c.price, ',', ''), '')::NUMERIC / 2, ${TOTAL_COURSE_FEE / 2})
+          WHEN ps."paymentPlan" = 'FOUR_INSTALLMENTS' THEN (
             SELECT COALESCE(SUM(amount), 0)
             FROM "PaymentInstallment" 
-            WHERE "paymentStatusId" = "PaymentStatus".id AND paid = true
+            WHERE "paymentStatusId" = ps.id AND paid = true
           )
           ELSE 0
         END) as revenue,
         COUNT(*) as count
-      FROM "PaymentStatus"
-      WHERE status != 'EXPIRED'
-      GROUP BY "paymentPlan"
+      FROM "PaymentStatus" ps
+      LEFT JOIN "Course" c ON ps."courseId" = c.id
+      WHERE ps.status != 'EXPIRED'
+      GROUP BY ps."paymentPlan"
     `;
 
     const revenueByCourseRaw = await prismadb.$queryRaw<
@@ -1965,11 +2074,9 @@ paymentApp.get("/admin/payments/stats", async (req: Request, res: Response) => {
         c.id,
         c.title,
         SUM(CASE 
-          WHEN ps."paymentPlan" = 'FULL_PAYMENT' THEN ${TOTAL_COURSE_FEE}
-          WHEN ps."paymentPlan" = 'FIRST_HALF_COMPLETE' AND ps.status = 'COMPLETE' THEN ${TOTAL_COURSE_FEE}
-          WHEN ps."paymentPlan" = 'FIRST_HALF_COMPLETE' AND ps.status = 'BALANCE_HALF_PAYMENT' THEN ${
-            TOTAL_COURSE_FEE / 2
-          }
+          WHEN ps."paymentPlan" = 'FULL_PAYMENT' THEN COALESCE(NULLIF(REPLACE(c.price, ',', ''), '')::NUMERIC, ${TOTAL_COURSE_FEE})
+          WHEN ps."paymentPlan" = 'FIRST_HALF_COMPLETE' AND ps.status = 'COMPLETE' THEN COALESCE(NULLIF(REPLACE(c.price, ',', ''), '')::NUMERIC, ${TOTAL_COURSE_FEE})
+          WHEN ps."paymentPlan" = 'FIRST_HALF_COMPLETE' AND ps.status = 'BALANCE_HALF_PAYMENT' THEN COALESCE(NULLIF(REPLACE(c.price, ',', ''), '')::NUMERIC / 2, ${TOTAL_COURSE_FEE / 2})
           WHEN ps."paymentPlan" = 'FOUR_INSTALLMENTS' THEN (
             SELECT COALESCE(SUM(amount), 0)
             FROM "PaymentInstallment" 

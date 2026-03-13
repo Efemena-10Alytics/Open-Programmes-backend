@@ -5,10 +5,11 @@
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "dev": "nodemon --max-old-space-size=4096 src/index.ts",
+    "dev": "NODE_OPTIONS='--max-old-space-size=4096' nodemon src/index.ts",
     "build": "tsc",
-    "start": "node --max-old-space-size=4096 dist/src/index.js",
-    "deploy": "prisma migrate deploy --schema ./prisma/schema.prisma && node --max-old-space-size=4096 dist/src/index.js"
+    "start": "node --max-old-space-size=4096 dist/index.js",
+    "deploy": "prisma migrate deploy --schema ./prisma/schema.prisma && node --max-old-space-size=4096 dist/index.js",
+    "sync-sheets": "ts-node script/sync-all-sheets.ts"
   },
   "author": "Anderson",
   "license": "ISC",
@@ -32,9 +33,13 @@
     "express": "^4.19.1",
     "express-rate-limit": "^7.3.1",
     "express-session": "^1.18.0",
+    "form-data": "^4.0.5",
+    "google-auth-library": "^10.6.1",
+    "googleapis": "^171.4.0",
     "http": "^0.0.1-security",
     "jsonwebtoken": "^9.0.2",
     "lodash": "^4.17.21",
+    "mailgun.js": "^12.7.1",
     "mongoose": "^8.0.0",
     "multer": "^2.0.2",
     "node-cron": "^3.0.3",

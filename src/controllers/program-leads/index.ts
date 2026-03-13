@@ -1,5 +1,5 @@
 import { Request, Response } from "express";
-import { prismadb } from "../../../src/index";
+import { prismadb } from "../../lib/prismadb";
 import excel from 'exceljs';
 
 export async function createProgramLead(req: Request, res: Response) {
@@ -70,9 +70,9 @@ export async function createProgramLead(req: Request, res: Response) {
 export async function getProgramLeads(req: Request, res: Response) {
   try {
     const { programType } = req.query;
-    
+
     const whereClause = programType ? { programType: String(programType) } : {};
-    
+
     const leads = await prismadb.programLeads.findMany({
       where: whereClause,
       orderBy: {
@@ -106,9 +106,9 @@ export async function getProgramLeadsCount(req: Request, res: Response) {
 export async function exportProgramLeads(req: Request, res: Response) {
   try {
     const { programType } = req.query;
-    
+
     const whereClause = programType ? { programType: String(programType) } : {};
-    
+
     const leads = await prismadb.programLeads.findMany({
       where: whereClause,
       orderBy: {

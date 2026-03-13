@@ -30,6 +30,8 @@ import programLeads from "./program-leads";
 import changeRequest from "./changeRequest";
 import classroom from "./classroom";
 import assignment from "./assignment";
+import scholarship from "./scholarship";
+
 
 const router = express.Router();
 
@@ -65,5 +67,7 @@ export default (): express.Router => {
   changeRequest(router);
   classroom(router);
   assignment(router);
+  scholarship(router);
+
   return router;
 };
