@@ -644,4 +644,28 @@ salesDashboardApp.get("/transactions/:id", async (req: Request, res: Response) =
   }
 });
 
+// 8. Export to Google Sheets
+salesDashboardApp.post("/export-to-sheets", async (req: Request, res: Response) => {
+  try {
+    const { GoogleSheetsSyncService } = await import("../../utils/googleSheets");
+    const result = await GoogleSheetsSyncService.syncPaymentData();
+    
+    if (result && result.success) {
+      const spreadsheetId = process.env.GOOGLE_SHEETS_PAYMENTS_SPREADSHEET_ID;
+      const sheetUrl = spreadsheetId ? `https://docs.google.com/spreadsheets/d/${spreadsheetId}` : null;
+      
+      res.json({ 
+        success: true, 
+        message: `Successfully exported ${result.count} records to Google Sheets.`,
+        sheetUrl
+      });
+    } else {
+      res.status(500).json({ success: false, error: result?.error || 'Unknown error occurred during sync' });
+    }
+  } catch (error) {
+    console.error("Error exporting to sheets:", error);
+    res.status(500).json({ success: false, error: "Failed to export data to Google Sheets" });
+  }
+});
+
 export default salesDashboardApp;

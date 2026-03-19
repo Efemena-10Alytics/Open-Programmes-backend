@@ -256,7 +256,7 @@ class GoogleSheetsSyncService {
         console.log('[GOOGLE_SHEETS_PAYMENTS]: Starting payment data sync...');
         try {
             const spreadsheetId = process.env.GOOGLE_SHEETS_PAYMENTS_SPREADSHEET_ID;
-            const range = 'Sheet1!A1';
+            let range = process.env.GOOGLE_SHEETS_PAYMENTS_RANGE || 'Sheet1!A1';
             if (!spreadsheetId) {
                 console.warn('[GOOGLE_SHEETS_PAYMENTS]: SPREADSHEET_ID not configured.');
                 return { success: false, error: 'Spreadsheet ID missing' };
@@ -283,6 +283,20 @@ class GoogleSheetsSyncService {
             }
             const auth = this.getAuth();
             const sheets = googleapis_1.google.sheets({ version: 'v4', auth });
+            // Automatically find the first sheet's name if range is not specifically configured
+            if (!process.env.GOOGLE_SHEETS_PAYMENTS_RANGE) {
+                try {
+                    const spreadsheet = await sheets.spreadsheets.get({ spreadsheetId });
+                    const firstSheet = spreadsheet.data.sheets?.[0]?.properties?.title;
+                    if (firstSheet) {
+                        range = `${firstSheet}!A1`;
+                        console.log(`[GOOGLE_SHEETS_PAYMENTS]: Discovered sheet name: "${firstSheet}". Using range: "${range}"`);
+                    }
+                }
+                catch (err) {
+                    console.warn('[GOOGLE_SHEETS_PAYMENTS]: Spreadsheet fetch failed, using default range.', err.message);
+                }
+            }
             // Clear the sheet first
             try {
                 await sheets.spreadsheets.values.clear({
